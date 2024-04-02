@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "chineseDatabase.py",
+            "console": "integratedTerminal",
+            "args": ["HSK V3/Databases/HSK V3.db", "HSK V3/Vocabulary/HSK V3 Band 1.txt", "HSK V3/Definitions/HSK V3 Band 1.tsv", "HSK V3/Vocabulary/HSK V3 Band 2.txt", "HSK V3/Definitions/HSK V3 Band 2.tsv", "HSK V3/Vocabulary/HSK V3 Band 3.txt", "HSK V3/Definitions/HSK V3 Band 3.tsv", "HSK V3/Vocabulary/HSK V3 Band 4.txt", "HSK V3/Definitions/HSK V3 Band 4.tsv", "HSK V3/Vocabulary/HSK V3 Band 5.txt", "HSK V3/Definitions/HSK V3 Band 5.tsv", "HSK V3/Vocabulary/HSK V3 Band 6.txt", "HSK V3/Definitions/HSK V3 Band 6.tsv", "HSK V3/Vocabulary/HSK V3 Bands 7-9.txt", "HSK V3/Definitions/HSK V3 Bands 7-9.tsv"]
+        }
+    ]
+}
