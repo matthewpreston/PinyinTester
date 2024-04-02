@@ -97,6 +97,9 @@ class View(QMainWindow):
         # ==== Testing view ====
         self.testingView = QWidget(self)
         self.testingLayout = QVBoxLayout()
+        self.buttonBack = QPushButton("Back")
+        self.buttonBack.setMaximumWidth(int(windowWidth * 0.2))
+        self.testingLayout.addWidget(self.buttonBack)
         self.labelChinese = QLabel()
         self.labelChinese.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.labelChinese.setFont(QFont("Arial", 60))
@@ -392,6 +395,10 @@ class Controller():
         self.connectSignalAndSlots()
         self.view.loadSetupView()
     
+    def backToSetup(self) -> None:
+        """Return to setup view"""
+        self.view.loadSetupView()
+
     def beginTesting(self) -> None:
         if len(self.activeLearningLevels) == 0: # All were checked off
             messageBox = QMessageBox()
@@ -432,6 +439,7 @@ class Controller():
         self.view.buttonBegin.clicked.connect(self.beginTesting)
 
         # Testing view
+        self.view.buttonBack.clicked.connect(self.backToSetup)
         self.view.buttonCheck.clicked.connect(self.checkAnswer)
         self.view.lineEditPinyin.returnPressed.connect(self.returnPressed)
         self.view.buttonNext.clicked.connect(self.nextQuestion)
