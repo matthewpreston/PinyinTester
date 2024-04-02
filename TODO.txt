@@ -1,3 +1,4 @@
-- delete card button and functionality
+- deleted card graveyard revival
 - word wrap prompt
 - cardbox Feature
+- fix where if no entries left in level, would throw uncaught exception in Model.getRandomPhraseInLevel

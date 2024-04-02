@@ -97,9 +97,14 @@ class View(QMainWindow):
         # ==== Testing view ====
         self.testingView = QWidget(self)
         self.testingLayout = QVBoxLayout()
+        self.layoutHeader = QHBoxLayout()
         self.buttonBack = QPushButton("Back")
         self.buttonBack.setMaximumWidth(100)
-        self.testingLayout.addWidget(self.buttonBack)
+        self.layoutHeader.addWidget(self.buttonBack)
+        self.buttonDelete = QPushButton("Delete")
+        self.buttonDelete.setMaximumWidth(100)
+        self.layoutHeader.addWidget(self.buttonDelete)
+        self.testingLayout.addLayout(self.layoutHeader)
         self.labelChinese = QLabel()
         self.labelChinese.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.labelChinese.setFont(QFont("Arial", 60))
@@ -155,6 +160,7 @@ class View(QMainWindow):
         self.labelPinyin.setText(answer)
         self.labelDetails.setText(details)
         self.lineEditPinyin.setText("")
+        self.lineEditPinyin.setFocus()
     
     def loadSetupView(self) -> None:
         match self.state:
@@ -181,6 +187,7 @@ class View(QMainWindow):
                 pass
         self.state = View.STATE.TESTING
         self.setCentralWidget(self.testingView)
+        self.lineEditPinyin.setFocus()
 
     def hasInput(self) -> bool:
         """Return true if textbox isn't blank"""
@@ -362,6 +369,10 @@ class Model():
     def close(self) -> None:
         self.chineseDB.close()
 
+    def deleteEntry(self) -> None:
+        """Removes entry from testing pool"""
+        self.chineseDB.deletePhrase(self.currentPhrase.id)
+
     def getFirstPhraseInLevel(self, level: LEARNING_LEVEL) -> tuple[str, int]:
         """Returns the first phrase in a level and its index"""
         return (self.vocabularies[level][0], 1)
@@ -402,7 +413,7 @@ class Controller():
 
     def beginTesting(self) -> None:
         if len(self.activeLearningLevels) == 0: # All were checked off
-            messageBox = QMessageBox()
+            messageBox = QMessageBox(self.view)
             messageBox.setWindowTitle("Error")
             messageBox.setText("Please select at least one level")
             messageBox.exec()
@@ -441,9 +452,30 @@ class Controller():
 
         # Testing view
         self.view.buttonBack.clicked.connect(self.backToSetup)
+        self.view.buttonDelete.clicked.connect(self.deleteEntry)
         self.view.buttonCheck.clicked.connect(self.checkAnswer)
         self.view.lineEditPinyin.returnPressed.connect(self.returnPressed)
         self.view.buttonNext.clicked.connect(self.nextQuestion)
+
+    def deleteEntry(self) -> None:
+        """Deletes currently shown entry"""
+        messageBox = QMessageBox(self.view)
+        messageBox.setWindowTitle("Confirm Delete")
+        messageBox.setText("Are you sure you want to delete this entry?")
+        messageBox.setStandardButtons(
+            QMessageBox.StandardButton.Yes |
+            QMessageBox.StandardButton.No |
+            QMessageBox.StandardButton.Cancel
+        )
+        result = messageBox.exec()
+        match result:
+            case QMessageBox.StandardButton.Yes:
+                self.model.deleteEntry()
+                self.loadNextQuestion()
+            case QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel:
+                pass
+            case _:
+                pass
 
     def initializeSetupView(self) -> None:
         """In the View's setup view, give the first and last phrases"""

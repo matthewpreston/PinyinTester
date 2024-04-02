@@ -221,7 +221,8 @@ class ChineseDB:
                 chinesePhrases
             WHERE
                 simplified = :_simplified AND
-                id != :_originalID;
+                id != :_originalID AND
+                deleted = 0;
             """,
             _simplified=simplified,
             _originalID=originalID
@@ -248,7 +249,8 @@ class ChineseDB:
                 chinesePhrases
             WHERE
                 band = :_band AND
-                ordinalID <= :_maxOrdinalID;
+                ordinalID <= :_maxOrdinalID AND
+                deleted = 0;
             """,
             _band=ChineseDB.bands[band],
             _maxOrdinalID=maxOrdinalID
