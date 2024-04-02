@@ -1,2 +1,3 @@
 - delete card button and functionality
+- word wrap prompt
 - cardbox Feature
