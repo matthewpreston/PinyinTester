@@ -6,6 +6,7 @@
 # 你好 -> ni3hao3
 
 from collections.abc import Callable
+import datetime
 from enum import Enum
 import random
 import sys
@@ -266,10 +267,19 @@ class Model():
         'À':'A','È':'E','Ì':'I','Ò':'O','Ù':'U','Ǜ':'V'
     }
 
-    class AnswerState(Enum):
+    class ANSWER_STATE(Enum):
         CORRECT=0
         WRONG=1
         HOMONYM=2
+
+    class QUALITY(Enum):
+        """Qualities used for SuperMemo 2 (SM-2) algorithm"""
+        FIVE = 5    # Perfect response
+        FOUR = 4    # Correct response after hesitation
+        THREE = 3   # Correct response but with serious difficulty
+        TWO = 2     # Incorrect response with a quick response
+        ONE = 1     # Incorrect response that matches a different answer
+        ZERO = 0    # Incorrect response with no recollection
 
     def __init__(self, vocabularyFiles: list[str], databaseFile: str) -> None:
         self.vocabularies = self._getChineseVocabularies(vocabularyFiles)
@@ -278,6 +288,58 @@ class Model():
         self.chineseDB.open()
         self.currentPhrase: ChineseDataWithStats = None
         self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
+        self.start: datetime.datetime = None
+
+    def _assessQuality(self, answerState: ANSWER_STATE) -> QUALITY:
+        """Updates quality member based on timing and correctness of response"""
+        # Figure out how much time the user took to answer
+        temp = datetime.datetime.now() - self.start
+        delta = float(temp.seconds) + (temp.microseconds / 1000000)
+        num = self.chineseDB.getResponseTimeCount()
+        match answerState:
+            case Model.ANSWER_STATE.CORRECT:
+                if num >= 100:
+                    avg = self.chineseDB.getResponseTimeAverage()
+                    std = self.chineseDB.getResponseTimeVariance() ** 0.5
+                    if delta <= (avg - std):
+                        return Model.QUALITY.FIVE
+                    elif delta <= (avg + std):
+                        return Model.QUALITY.FOUR
+                    else:
+                        return Model.QUALITY.THREE
+                else: # Not enough empirical data
+                    return Model.QUALITY.FOUR
+            case Model.ANSWER_STATE.HOMONYM:
+                # Can't ever give a 5/5 rating
+                if num >= 100:
+                    avg = self.chineseDB.getResponseTimeAverage()
+                    std = self.chineseDB.getResponseTimeVariance() ** 0.5
+                    if delta <= (avg - std):
+                        return Model.QUALITY.FOUR
+                    else:
+                        return Model.QUALITY.THREE
+                else: # Not enough empirical data
+                    return Model.QUALITY.THREE
+            case Model.ANSWER_STATE.WRONG:
+                if num >= 100:
+                    avg = self.chineseDB.getResponseTimeAverage()
+                    std = self.chineseDB.getResponseTimeVariance() ** 0.5
+                    if delta <= (avg - std):
+                        return Model.QUALITY.TWO
+                numDifferentAnswers = len(
+                    self.chineseDB.getPhrasesWithSamePinyin(
+                        self.currentPhrase.pinyin, 
+                        self.currentPhrase.id
+                    )
+                )
+                if numDifferentAnswers > 0:
+                    return Model.QUALITY.ONE
+                else:
+                    return Model.QUALITY.ZERO
+            case _:
+                pass
+        # Dunno how it got here so just give a meh rating
+        return Model.QUALITY.TWO
 
     def _getChineseVocabularies(self, chineseVocabularyFiles: list[str]) -> dict[HSK_LEVEL, list[str]]:
         """Reads a list of files and harvests the first column"""
@@ -299,6 +361,32 @@ class Model():
     def _getPhrasesWithSameLogographs(self, logograph: str, originalID: int) -> list[ChineseDataWithStats]:
         """Returns list of phrases with the same logograph but not with the same original ID"""
         return self.chineseDB.getPhrasesWithSameLogographs(logograph, originalID)
+
+    def _updateDatabase(self, answerState: ANSWER_STATE, wasCorrect: bool) -> None:
+        """Updates Chinese phrase data and inserts the response time"""
+        quality = self._assessQuality(answerState)
+        self.chineseDB.updatePhrase(
+            self.currentPhrase.id,
+            wasCorrect=wasCorrect,
+            lastTimeCorrect=datetime.datetime.now(),
+            dueDate=Model.updateDueDate(
+                self.currentPhrase.lastTimeSeen,
+                self.currentPhrase.dueDate,
+                self.currentPhrase.easeFactor,
+                quality
+            ),
+            easeFactor=Model.updateEaseFactor(
+                self.currentPhrase.easeFactor,
+                quality
+            )
+        )
+        temp = datetime.datetime.now() - self.start
+        delta = float(temp.seconds) + (temp.microseconds / 1000000)
+        self.chineseDB.insertResponseTime(
+            self.currentPhrase.id,
+            timeStamp=datetime.datetime.now(),
+            responseTime=delta
+        )
 
     @staticmethod
     def convertDiacriticToNumber(pinyin: str) -> str:
@@ -354,17 +442,61 @@ class Model():
         """Returns a details string for the flashcard from the class"""
         return data.english
 
-    def checkAnswer(self, userInput: str) -> AnswerState:
+    @staticmethod
+    def updateEaseFactor(oldEaseFactor: float, quality: QUALITY) -> float:
+        """Returns new ease factor with clamping"""
+        match quality:
+            case Model.QUALITY.FIVE:
+                return max(1.3, oldEaseFactor + 0.10)
+            case Model.QUALITY.FOUR:
+                return max(1.3, oldEaseFactor + 0.00)
+            case Model.QUALITY.THREE:
+                return max(1.3, oldEaseFactor - 0.14)
+            case Model.QUALITY.TWO:
+                return max(1.3, oldEaseFactor - 0.32)
+            case Model.QUALITY.ONE:
+                return max(1.3, oldEaseFactor - 0.54)
+            case Model.QUALITY.ZERO:
+                return max(1.3, oldEaseFactor - 0.80)
+            case _:
+                return oldEaseFactor
+
+    @staticmethod
+    def updateDueDate(lastTimeSeen: str, oldDueDate: str, oldEaseFactor: float, quality: QUALITY) -> datetime.datetime:
+        """Provides the next due date in YYYY-MM-DD HH:MM:SS"""
+        # Check if user failed
+        if quality in [Model.QUALITY.ZERO, Model.QUALITY.ONE, Model.QUALITY.TWO]:
+            return datetime.datetime.now() + datetime.timedelta(days=1)
+        # Check if it's the first time this card has ever been seen
+        if lastTimeSeen == "0" or oldDueDate == "0":
+            return datetime.datetime.now() + datetime.timedelta(days=1)
+        newEase = Model.updateEaseFactor(oldEaseFactor, quality)
+        lts = ChineseDB.formatTimeToDateTime(lastTimeSeen)
+        odd = ChineseDB.formatTimeToDateTime(oldDueDate)
+        delta = odd - lts
+        interval = delta.days + round(delta.seconds / 86400)
+        if interval == 1:
+            return datetime.datetime.now() + datetime.timedelta(days=6)
+        else:
+            return datetime.datetime.now() + datetime.timedelta(days=int(interval*newEase))
+
+    def checkAnswer(self, userInput: str) -> ANSWER_STATE:
         """Return true if correct pinyin for given chinese phrase"""
         # Pinyin has HTML tags so extract the element within
         i = userInput.lower().replace(' ','')
         if i == Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower():
-            return Model.AnswerState.CORRECT
+            self._updateDatabase(Model.ANSWER_STATE.CORRECT, True)
+            return Model.ANSWER_STATE.CORRECT
+        
         # Check against homonyms
         for p in self.phrasesWithSameLogographs:
             if i == Model.getPinyinBetweenTags(p.pinyin).lower():
-                return Model.AnswerState.HOMONYM
-        return Model.AnswerState.WRONG
+                self._updateDatabase(Model.ANSWER_STATE.HOMONYM, False)
+                return Model.ANSWER_STATE.HOMONYM
+        
+        # Boowomp
+        self._updateDatabase(Model.ANSWER_STATE.WRONG, False)
+        return Model.ANSWER_STATE.WRONG
 
     def close(self) -> None:
         self.chineseDB.close()
@@ -391,6 +523,7 @@ class Model():
         self.phrasesWithSameLogographs = self._getPhrasesWithSameLogographs(
             self.currentPhrase.simplified,
             self.currentPhrase.id)
+        self.start = datetime.datetime.now()
         return self.currentPhrase
 
 class Controller():
@@ -429,11 +562,11 @@ class Controller():
             return
         self.hasChecked = True
         match self.model.checkAnswer(self.view.getInput()):
-            case Model.AnswerState.CORRECT:
+            case Model.ANSWER_STATE.CORRECT:
                 self.view.setAnswerCorrect()
-            case Model.AnswerState.WRONG:
+            case Model.ANSWER_STATE.WRONG:
                 self.view.setAnswerWrong()
-            case Model.AnswerState.HOMONYM:
+            case Model.ANSWER_STATE.HOMONYM:
                 self.view.unhideAnswer()
             case _:
                 pass
@@ -472,6 +605,7 @@ class Controller():
             case QMessageBox.StandardButton.Yes:
                 self.model.deleteEntry()
                 self.loadNextQuestion()
+                self.hasChecked = False
             case QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel:
                 pass
             case _:

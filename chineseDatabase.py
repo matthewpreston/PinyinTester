@@ -1,18 +1,15 @@
 # chineseDatabase.py - interacts with DB
 
-import datetime
 import sys
 
 from chineseClasses import HSK_LEVEL
+from database import *
 
-from PyQt6.QtWidgets import QApplication
-from PyQt6.QtSql import QSqlDatabase, QSqlQuery
+if __name__ == "__main__":
+    from PyQt6.QtWidgets import QApplication
+from PyQt6.QtSql import QSqlQuery
 
 USAGE = f"python {sys.argv[0]} <dbFile.db> <vocab1.txt> <data1.tsv> [<vocab2.txt> <data2.tsv>]..."
-
-class Data:
-    def __init__(self) -> None:
-        pass
 
 class ChineseData(Data):
     def __init__(self,
@@ -32,12 +29,13 @@ class ChineseData(Data):
         self.taiwanPinyin = taiwanPinyin
         self.wordsWithSamePinyin = wordsWithSamePinyin
 
-def parse(data: str, separator: str='\t') -> ChineseData:
+    @classmethod
+    def fromDelimitedString(cls, data: str, separator: str='\t'):
         """Create a ChineseData object given a delimited string"""
         entry = data.split(separator)
         if len(entry) < 7:
             raise IndexError("Not enough data")
-        return ChineseData(
+        return cls(
             entry[0].strip(),
             entry[1].strip(),
             entry[2].strip(),
@@ -60,15 +58,19 @@ class ChineseDataWithStats(ChineseData):
                  timesSeen: int,
                  timesCorrect: int,
                  lastTimeSeen: str,
-                 lastTimeCorrect: str) -> None:
+                 lastTimeCorrect: str,
+                 dueDate: str,
+                 easeFactor: float) -> None:
         super().__init__(simplified, traditional, pinyin, english, classifier, taiwanPinyin, wordsWithSamePinyin)
         self.id = id
         self.timesSeen = timesSeen
         self.timesCorrect = timesCorrect
         self.lastTimeSeen = lastTimeSeen
         self.lastTimeCorrect = lastTimeCorrect
+        self.dueDate = dueDate
+        self.easeFactor = easeFactor
 
-class ChineseDB:
+class ChineseDB(Database):
     bands = {
         HSK_LEVEL.HSK_1: "hsk1",
         HSK_LEVEL.HSK_2: "hsk2",
@@ -80,120 +82,72 @@ class ChineseDB:
     }
 
     def __init__(self, dbName: str) -> None:
-        self.db = dbName
-        self.con = QSqlDatabase.addDatabase("QSQLITE")
-        self.con.setDatabaseName(self.db)
-
-    def _execQuery(self, query: str, **kwargs: str) -> list[ChineseDataWithStats]:
-        """Executes query with given keyword arguments"""
-        _query = QSqlQuery(self.con)
-        r = _query.prepare(query)
-        for key, value in kwargs.items():
-            _query.bindValue(f":{key}", value)
-        _query.exec()
-        results = []
-        while _query.next():
-            r = ChineseDataWithStats(
-                _query.value(0), # id
-                _query.value(1), # simplified
-                _query.value(2), # traditional
-                _query.value(3), # pinyin
-                _query.value(4), # english
-                _query.value(5), # classifier
-                _query.value(6), # taiwanPinyin
-                _query.value(7), # wordsWithSamePinyin
-                _query.value(8), # timesSeen
-                _query.value(9), # timesCorrect
-                _query.value(10),# lastTimeSeen
-                _query.value(11) # lastTimeCorrect
-            )
-            results.append(r)
-        _query.finish()
-        return results
-
-    def _insertPhrase(self, 
-                      band: str,
-                      ordinalID: int,
-                      simplified: str,
-                      traditional: str,
-                      pinyin: str,
-                      english: str,
-                      classifier: str,
-                      taiwanPinyin: str,
-                      wordsWithSamePinyin: str,
-                      timesSeen: int = 0,
-                      timesCorrect: int = 0,
-                      lastTimeSeen: str = "",
-                      lastTimeCorrect: str = "") -> bool:
-        """Inserts into database a new phrase given phrase data"""
-        query = QSqlQuery(self.con)
-        query.prepare(
-            """
-            INSERT OR IGNORE INTO chinesePhrases (
-                band,
-                ordinalID,
-                simplified,
-                traditional,
-                pinyin,
-                english,
-                classifier,
-                taiwanPinyin,
-                wordsWithSamePinyin,
-                timesSeen,
-                timesCorrect,
-                lastTimeSeen,
-                lastTimeCorrect
-            )
-            VALUES (
-                :band,
-                :ordinalID,
-                :simplified,
-                :traditional,
-                :pinyin,
-                :english,
-                :classifier,
-                :taiwanPinyin,
-                :wordsWithSamePinyin,
-                :timesSeen,
-                :timesCorrect,
-                :lastTimeSeen,
-                :lastTimeCorrect
-            )
-            """
-        )
-        query.bindValue(":band", band)
-        query.bindValue(":ordinalID", ordinalID)
-        query.bindValue(":simplified", simplified)
-        query.bindValue(":traditional", traditional)
-        query.bindValue(":pinyin", pinyin)
-        query.bindValue(":english", english)
-        query.bindValue(":classifier", classifier)
-        query.bindValue(":taiwanPinyin", taiwanPinyin)
-        query.bindValue(":wordsWithSamePinyin", wordsWithSamePinyin)
-        query.bindValue(":timesSeen", timesSeen)
-        query.bindValue(":timesCorrect", timesCorrect)
-        query.bindValue(":lastTimeSeen", lastTimeSeen)
-        query.bindValue(":lastTimeCorrect", lastTimeCorrect)
-        return query.exec()
-
-    def close(self) -> None:
-        """Close database connection"""
-        self.con.close()
+        super().__init__(dbName)
 
     def deletePhrase(self, id: int) -> bool:
         """Deletes given phrase via ID"""
-        query = QSqlQuery(self.con)
-        query.prepare(
-            """
+        return self._execQueryNoResults(
+            query="""
             UPDATE chinesePhrases
             SET
                 deleted = 1
             WHERE
-                id = :id;
+                id = :_id;
+            """,
+            _id=id
+        )
+
+    def getResponseTimeAverage(self) -> float:
+        """Returns the average response time"""
+        result = self._execQueryGetResult(
+            query="""
+            SELECT
+                AVG(responseTime)
+            FROM
+                responseTimes;
             """
         )
-        query.bindValue(":id", id)
-        return query.exec()
+        if result == "": # Empty table
+            return float("NaN")
+        else:
+            return float(result)
+    
+    def getResponseTimeCount(self) -> int:
+        """Returns the number of response times"""
+        return int(self._execQueryGetResult(
+            query="""
+            SELECT
+                COUNT(1)
+            FROM
+                responseTimes;
+            """
+        ))
+
+    def getResponseTimeVariance(self) -> float:
+        """Returns the variance in response times"""
+        result = self._execQueryGetResult(
+            query="""
+            SELECT
+                AVG((responseTimes.responseTime - temp.avg) * (responseTimes.responseTime - temp.avg))
+            FROM
+                responseTimes,
+            (
+                SELECT
+                    AVG(responseTime)
+                AS
+                    avg
+                FROM
+                    responseTimes
+            )
+                AS
+                    temp
+            ;
+            """
+        )
+        if result == "": # Empty table
+            return float("NaN")
+        else:
+            return float(result)
 
     def getPhrasesWithSameLogographs(self, simplified: str, originalID: int) -> list[ChineseDataWithStats]:
         """
@@ -202,8 +156,8 @@ class ChineseDB:
         Ex. 吧 has 3 phrases: ba5, ba1, bia1, perhaps with ID's 0, 1, and 2 resp.
         getPhrasesWithSameLogographs(吧, 0) returns [(1, 吧 data...), (2, 吧 data...)]
         """
-        return self._execQuery(
-            """
+        return self._execQueryGetResults(
+            query="""
             SELECT
                 id,
                 simplified,
@@ -216,7 +170,9 @@ class ChineseDB:
                 timesSeen,
                 timesCorrect,
                 lastTimeSeen,
-                lastTimeCorrect
+                lastTimeCorrect,
+                dueDate,
+                easeFactor
             FROM
                 chinesePhrases
             WHERE
@@ -224,14 +180,34 @@ class ChineseDB:
                 id != :_originalID AND
                 deleted = 0;
             """,
+            constructor=lambda r: ChineseDataWithStats(
+                r.value(0), # id
+                r.value(1), # simplified
+                r.value(2), # traditional
+                r.value(3), # pinyin
+                r.value(4), # english
+                r.value(5), # classifier
+                r.value(6), # taiwanPinyin
+                r.value(7), # wordsWithSamePinyin
+                r.value(8), # timesSeen
+                r.value(9), # timesCorrect
+                r.value(10),# lastTimeSeen
+                r.value(11),# lastTimeCorrect
+                r.value(12),# dueDate
+                r.value(13) # easeFactor
+            ),
             _simplified=simplified,
             _originalID=originalID
         )
 
-    def getPhrases(self, band: HSK_LEVEL, maxOrdinalID: int) -> list[ChineseDataWithStats]:
-        """Gets a list of phrase data given a particular band and an upper bound in that band"""
-        return self._execQuery(
-            """
+    def getPhrasesWithSamePinyin(self, pinyin: str, originalID: int) -> list[ChineseDataWithStats]:
+        """
+        Returns a list of phrases that have the same pinyin but exclude the original
+        Ex. tā has 3 phrases: 它, 踏, 塌 perhaps with ID's 0, 1, and 2 resp.
+        getPhrasesWithSamePinyin(<span class="tone1">tā</span>, 0) returns [(1, 踏 data...), (2, 塌 data...)]
+        """
+        return self._execQueryGetResults(
+            query="""
             SELECT
                 id,
                 simplified,
@@ -244,7 +220,55 @@ class ChineseDB:
                 timesSeen,
                 timesCorrect,
                 lastTimeSeen,
-                lastTimeCorrect
+                lastTimeCorrect,
+                dueDate,
+                easeFactor
+            FROM
+                chinesePhrases
+            WHERE
+                pinyin = :_pinyin AND
+                id != :_originalID AND
+                deleted = 0;
+            """,
+            constructor=lambda r: ChineseDataWithStats(
+                r.value(0), # id
+                r.value(1), # simplified
+                r.value(2), # traditional
+                r.value(3), # pinyin
+                r.value(4), # english
+                r.value(5), # classifier
+                r.value(6), # taiwanPinyin
+                r.value(7), # wordsWithSamePinyin
+                r.value(8), # timesSeen
+                r.value(9), # timesCorrect
+                r.value(10),# lastTimeSeen
+                r.value(11),# lastTimeCorrect
+                r.value(12),# dueDate
+                r.value(13) # easeFactor
+            ),
+            _pinyin=pinyin,
+            _originalID=originalID
+        )
+
+    def getPhrases(self, level: HSK_LEVEL, maxOrdinalID: int) -> list[ChineseDataWithStats]:
+        """Gets a list of phrase data given a particular level and an upper bound in that level"""
+        return self._execQueryGetResults(
+            query="""
+            SELECT
+                id,
+                simplified,
+                traditional,
+                pinyin,
+                english,
+                classifier,
+                taiwanPinyin,
+                wordsWithSamePinyin,
+                timesSeen,
+                timesCorrect,
+                lastTimeSeen,
+                lastTimeCorrect,
+                dueDate,
+                easeFactor
             FROM
                 chinesePhrases
             WHERE
@@ -252,7 +276,23 @@ class ChineseDB:
                 ordinalID <= :_maxOrdinalID AND
                 deleted = 0;
             """,
-            _band=ChineseDB.bands[band],
+            constructor=lambda r: ChineseDataWithStats(
+                r.value(0), # id
+                r.value(1), # simplified
+                r.value(2), # traditional
+                r.value(3), # pinyin
+                r.value(4), # english
+                r.value(5), # classifier
+                r.value(6), # taiwanPinyin
+                r.value(7), # wordsWithSamePinyin
+                r.value(8), # timesSeen
+                r.value(9), # timesCorrect
+                r.value(10),# lastTimeSeen
+                r.value(11),# lastTimeCorrect
+                r.value(12),# dueDate
+                r.value(13) # easeFactor
+            ),
+            _band=ChineseDB.bands[level],
             _maxOrdinalID=maxOrdinalID
         )
 
@@ -260,7 +300,7 @@ class ChineseDB:
         """Creates table schemas"""
         query = QSqlQuery(self.con)
         query.exec("DROP TABLE IF EXISTS chinesePhrases;")
-        return query.exec(
+        result = query.exec(
             """
             CREATE TABLE chinesePhrases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT UNIQUE NOT NULL,
@@ -277,68 +317,133 @@ class ChineseDB:
                 timesCorrect INTEGER DEFAULT 0,
                 lastTimeSeen TEXT DEFAULT NULL,
                 lastTimeCorrect TEXT DEFAULT NULL,
+                dueDate TEXT DEFAULT NULL,
+                easeFactor REAL DEFAULT 2.5,
                 deleted INTEGER DEFAULT 0
             );
             """
         )
-
-    def insertPhrase(self, band: HSK_LEVEL, ordinalID: int, data: ChineseData) -> bool:
-        """Inserts into database a new phrase given phrase data"""
-        return self._insertPhrase(
-            ChineseDB[band],
-            ordinalID,
-            data.simplified,
-            data.traditional,
-            data.pinyin,
-            data.english,
-            data.classifier,
-            data.taiwanPinyin,
-            data.wordsWithSamePinyin
+        if result == False:
+            return result
+        query.exec("DROP TABLE IF EXISTS responseTimes;")
+        return query.exec(
+            """
+            CREATE TABLE responseTimes (
+                reponseID INTEGER PRIMARY KEY AUTOINCREMENT,
+                chinesePhraseID INTEGER,
+                timeStamp TEXT,
+                responseTime REAL,
+                FOREIGN KEY(chinesePhraseID) REFERENCES chinesePhrases(id)
+            );
+            """
         )
 
-    def open(self) -> bool:
-        """Open database connection"""
-        return self.con.open()
+    def insertPhrase(self, level: HSK_LEVEL, ordinalID: int, data: ChineseData) -> bool:
+        """Inserts into database a new phrase given phrase data"""
+        return self._execQueryNoResults(
+            query="""
+            INSERT OR IGNORE INTO chinesePhrases (
+                band,
+                ordinalID,
+                simplified,
+                traditional,
+                pinyin,
+                english,
+                classifier,
+                taiwanPinyin,
+                wordsWithSamePinyin
+            )
+            VALUES (
+                :_band,
+                :_ordinalID,
+                :_simplified,
+                :_traditional,
+                :_pinyin,
+                :_english,
+                :_classifier,
+                :_taiwanPinyin,
+                :_wordsWithSamePinyin
+            )
+            """,
+            _band=ChineseDB[level],
+            _ordinalID=ordinalID,
+            _simplified=data.simplified,
+            _traditional=data.traditional,
+            _pinyin=data.pinyin,
+            _english=data.english,
+            _classifier=data.classifier,
+            _taiwanPinyin=data.taiwanPinyin,
+            _wordsWithSamePinyin=data.wordsWithSamePinyin
+        )
 
-    def updatePhrase(self, id: int, wasCorrect: bool) -> bool:
+    def insertResponseTime(self, id: int, timeStamp: datetime.datetime, responseTime: float) -> bool:
+        """Logs how long one took to answer a flashcard"""
+        return self._execQueryNoResults(
+            query="""
+            INSERT OR IGNORE INTO responseTimes (
+                chinesePhraseID,
+                timeStamp,
+                responseTime
+            )
+            VALUES (
+                :_id,
+                :_timeStamp,
+                :_responseTime
+            )
+            """,
+            _id=id,
+            _timeStamp=ChineseDB.formatTimeToStr(timeStamp),
+            _responseTime=responseTime
+        )
+
+    def updatePhrase(
+            self, 
+            id: int, 
+            wasCorrect: bool, 
+            lastTimeCorrect: datetime.datetime, 
+            dueDate: datetime.datetime, 
+            easeFactor: float
+        ) -> bool:
         """Updates entry with the user's results (were they correct in answering or not)"""
-        now = datetime.datetime.now()
-        year = f"{now.year:04}"
-        month = f"{now.month:02}"
-        day = f"{now.day:02}"
-        hour = f"{now.hour:02}"
-        minute = f"{now.minute:02}"
-        second = f"{now.second:02}"
-        lastTimeSeen = f"{year}-{month}-{day} {hour}:{minute}:{second}"
-        
-        query = QSqlQuery(self.con)
+
+        lastTimeCorrect = ChineseDB.formatTimeToStr(lastTimeCorrect)
+        dueDate = ChineseDB.formatTimeToStr(dueDate)
         if wasCorrect:
-            query.prepare(
-                """
+            return self._execQueryNoResults(
+                query="""
                 UPDATE chinesePhrases
                 SET
-                    timesCorrect = timesCorrect + :correct,
-                    lastTimeSeen = :lastTimeSeen,
-                    lastTimeCorrect = :lastTimeCorrect
-                WHERE id = :id;
-                """
+                    timesCorrect = timesCorrect + :_correct,
+                    lastTimeSeen = :_lastTimeSeen,
+                    lastTimeCorrect = :_lastTimeCorrect,
+                    dueDate = :_dueDate,
+                    easeFactor = :_easeFactor
+                WHERE id = :_id;
+                """,
+                _id=id,
+                _correct=int(wasCorrect),
+                _lastTimeSeen=lastTimeCorrect,
+                _lastTimeCorrect=lastTimeCorrect,
+                _dueDate=dueDate,
+                _easeFactor=easeFactor
             )
         else:
-            query.prepare(
-                """
+            return self._execQueryNoResults(
+                query="""
                 UPDATE chinesePhrases
                 SET
-                    timesCorrect = timesCorrect + :correct,
-                    lastTimeSeen = :lastTimeSeen
-                WHERE id = :id;
-                """
+                    timesCorrect = timesCorrect + :_correct,
+                    lastTimeSeen = :_lastTimeSeen,
+                    dueDate = :_dueDate,
+                    easeFactor = :_easeFactor
+                WHERE id = :_id;
+                """,
+                _id=id,
+                _correct=int(wasCorrect),
+                _lastTimeSeen=lastTimeCorrect,
+                _dueDate=dueDate,
+                _easeFactor=easeFactor
             )
-        query.bindValue(":id", id)
-        query.bindValue(":correct", int(wasCorrect))
-        query.bindValue(":lastTimeSeen", lastTimeSeen)
-        if wasCorrect:
-            query.bindValue(":lastTimeCorrect", lastTimeSeen)
-        return query.exec()
 
 def main(args: list[str]) -> None:
     if len(args) <= 3:
@@ -358,7 +463,7 @@ def main(args: list[str]) -> None:
         vocabHandle = open(vocabFile, encoding="utf8")
         dataHandle = open(dataFile, encoding="utf8")
         dataHandle.readline() # Skip header
-        data = parse(dataHandle.readline())
+        data = ChineseData.fromDelimitedString(dataHandle.readline(), '\t')
         for ordinalID, vocab in enumerate(vocabHandle.readlines()):
             vocab = vocab.rstrip()
             while vocab == data.simplified:
@@ -366,7 +471,7 @@ def main(args: list[str]) -> None:
                     raise
                 if (l := dataHandle.readline()) == "": # EOF
                     break
-                data = parse(l)
+                data = ChineseData.fromDelimitedString(l, '\t')
         vocabHandle.close()
         dataHandle.close()
     db.close()
