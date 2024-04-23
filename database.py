@@ -92,7 +92,7 @@ class Database:
         """Gets a list of phrase data given a particular level and an upper bound in that level"""
         raise NotImplementedError
 
-    def getPhrasesDueToday(self, limit: int=None) -> list[Data]:
+    def getPhrasesDueToday(self, level: LEARNING_LEVEL, maxOrdinalID: int, limit: int=None) -> list[Data]:
         """Gets a list of phrases that are due today (i.e. date <= now())"""
         raise NotImplementedError
 

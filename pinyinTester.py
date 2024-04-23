@@ -532,9 +532,17 @@ class Model():
         """Returns specified phrase"""
         return self.vocabularies[level][index]
 
-    def getRandomPhraseInLevel(self, level: LEARNING_LEVEL, maximumBound: int) -> ChineseDataWithStats:
+    def getRandomPhraseInLevel(self, level: LEARNING_LEVEL, maximumBound: int, limit: int=None) -> ChineseDataWithStats:
         """Returns a random phrase in (chinese, pinyin, details)"""
-        self.currentPhrase = random.choice(self.chineseDB.getPhrases(level, maximumBound))
+        # First, get through all the ones due today
+        phrases = self.chineseDB.getPhrasesDueToday(level, maximumBound, limit)
+        if len(phrases) == 0:
+            # None were due today, get some other phrases
+            phrases = self.chineseDB.getPhrases(level, maximumBound)
+            if len(phrases) == 0:
+                # Still no phrases to choose from
+                raise IndexError
+        self.currentPhrase = random.choice(phrases)
         self.phrasesWithSameLogographs = self._getPhrasesWithSameLogographs(
             self.currentPhrase.simplified,
             self.currentPhrase.id)
@@ -566,9 +574,8 @@ class Controller():
             messageBox.setText("Please select at least one level")
             messageBox.exec()
             return
-        self.loadNextQuestion()
-        self.hasChecked = False
         self.view.loadTestingView()
+        self.loadNextQuestion()
 
     def checkAnswer(self) -> None:
         """Checks inputted pinyin versus true answer"""
@@ -622,7 +629,6 @@ class Controller():
             case QMessageBox.StandardButton.Yes:
                 self.model.deleteEntry()
                 self.loadNextQuestion()
-                self.hasChecked = False
             case QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel:
                 pass
             case _:
@@ -646,11 +652,20 @@ class Controller():
     def loadNextQuestion(self) -> None:
         """Fetches next question and loads it to view"""
         level = random.choice(self.activeLearningLevels)
-        data = self.model.getRandomPhraseInLevel(level, self.view.getSliderValue(level)-1)
+        try:
+            data = self.model.getRandomPhraseInLevel(level, self.view.getSliderValue(level)-1)
+        except IndexError: # No phrases to choose from
+            messageBox = QMessageBox(self.view)
+            messageBox.setWindowTitle("Error")
+            messageBox.setText("No phrases were found in the levels and selections provided. Please expand the scope or add to the database.")
+            messageBox.exec()
+            self.view.loadSetupView()
+            return
         prompt = Model.getPromptFromData(data)
         answer = Model.getAnswerFromData(data)
         details = Model.getDetailsFromData(data)
         self.view.loadNextQuestion(prompt, answer, details)
+        self.hasChecked = False
 
     def manageLearningLevels(self, level: LEARNING_LEVEL) -> Callable[[], None]:
         """
@@ -689,7 +704,6 @@ class Controller():
         """
         if self.hasChecked:
             self.loadNextQuestion()
-            self.hasChecked = False
         else:
             self.view.unhideAnswer()
             self.hasChecked = True

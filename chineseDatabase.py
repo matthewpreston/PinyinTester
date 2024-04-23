@@ -143,7 +143,7 @@ class ChineseDB(Database):
             _maxOrdinalID=maxOrdinalID
         )
 
-    def getPhrasesDueToday(self, limit: int=None) -> list[Data]:
+    def getPhrasesDueToday(self, level: HSK_LEVEL, maxOrdinalID: int, limit: int=None) -> list[Data]:
         """Gets a list of phrases that are due today (i.e. date <= now())"""
         if limit is not None and limit < 0:
             raise ValueError
@@ -167,12 +167,15 @@ class ChineseDB(Database):
             FROM
                 chinesePhrases
             WHERE
+                band = :_band AND
+                ordinalID <= :_maxOrdinalID AND
                 dueDate <= date("now") AND
                 deleted = 0
             ORDER BY
                 dueDate DESC
-            """ +
-            f"LIMIT {limit};" if limit is not None else ";"
+            {f"LIMIT {limit}" if limit is not None else ""}
+            ;
+            """
             ,
             constructor=lambda r: ChineseDataWithStats(
                 r.value(0), # id
@@ -189,7 +192,9 @@ class ChineseDB(Database):
                 r.value(11),# lastTimeCorrect
                 r.value(12),# dueDate
                 r.value(13) # easeFactor
-            )
+            ),
+            _band=ChineseDB.bands[level],
+            _maxOrdinalID=maxOrdinalID
         )
 
     def getPhrasesWithSameLogographs(self, simplified: str, originalID: int) -> list[ChineseDataWithStats]:
