@@ -2,12 +2,12 @@
 
 import sys
 
+if __name__ == "__main__":
+    from PySide6.QtWidgets import QApplication
+from PySide6.QtSql import QSqlQuery
+
 from chineseClasses import HSK_LEVEL
 from database import *
-
-if __name__ == "__main__":
-    from PyQt6.QtWidgets import QApplication
-from PyQt6.QtSql import QSqlQuery
 
 USAGE = f"python {sys.argv[0]} <dbFile.db> <vocab1.txt> <data1.tsv> [<vocab2.txt> <data2.tsv>]..."
 
@@ -97,57 +97,100 @@ class ChineseDB(Database):
             _id=id
         )
 
-    def getResponseTimeAverage(self) -> float:
-        """Returns the average response time"""
-        result = self._execQueryGetResult(
+    def getPhrases(self, level: HSK_LEVEL, maxOrdinalID: int) -> list[ChineseDataWithStats]:
+        """Gets a list of phrase data given a particular level and an upper bound in that level"""
+        return self._execQueryGetResults(
             query="""
             SELECT
-                AVG(responseTime)
+                id,
+                simplified,
+                traditional,
+                pinyin,
+                english,
+                classifier,
+                taiwanPinyin,
+                wordsWithSamePinyin,
+                timesSeen,
+                timesCorrect,
+                lastTimeSeen,
+                lastTimeCorrect,
+                dueDate,
+                easeFactor
             FROM
-                responseTimes;
-            """
+                chinesePhrases
+            WHERE
+                band = :_band AND
+                ordinalID <= :_maxOrdinalID AND
+                deleted = 0;
+            """,
+            constructor=lambda r: ChineseDataWithStats(
+                r.value(0), # id
+                r.value(1), # simplified
+                r.value(2), # traditional
+                r.value(3), # pinyin
+                r.value(4), # english
+                r.value(5), # classifier
+                r.value(6), # taiwanPinyin
+                r.value(7), # wordsWithSamePinyin
+                r.value(8), # timesSeen
+                r.value(9), # timesCorrect
+                r.value(10),# lastTimeSeen
+                r.value(11),# lastTimeCorrect
+                r.value(12),# dueDate
+                r.value(13) # easeFactor
+            ),
+            _band=ChineseDB.bands[level],
+            _maxOrdinalID=maxOrdinalID
         )
-        if result == "": # Empty table
-            return float("NaN")
-        else:
-            return float(result)
-    
-    def getResponseTimeCount(self) -> int:
-        """Returns the number of response times"""
-        return int(self._execQueryGetResult(
-            query="""
-            SELECT
-                COUNT(1)
-            FROM
-                responseTimes;
-            """
-        ))
 
-    def getResponseTimeVariance(self) -> float:
-        """Returns the variance in response times"""
-        result = self._execQueryGetResult(
-            query="""
+    def getPhrasesDueToday(self, limit: int=None) -> list[Data]:
+        """Gets a list of phrases that are due today (i.e. date <= now())"""
+        if limit is not None and limit < 0:
+            raise ValueError
+        return self._execQueryGetResults(
+            query=f"""
             SELECT
-                AVG((responseTimes.responseTime - temp.avg) * (responseTimes.responseTime - temp.avg))
+                id,
+                simplified,
+                traditional,
+                pinyin,
+                english,
+                classifier,
+                taiwanPinyin,
+                wordsWithSamePinyin,
+                timesSeen,
+                timesCorrect,
+                lastTimeSeen,
+                lastTimeCorrect,
+                dueDate,
+                easeFactor
             FROM
-                responseTimes,
-            (
-                SELECT
-                    AVG(responseTime)
-                AS
-                    avg
-                FROM
-                    responseTimes
+                chinesePhrases
+            WHERE
+                dueDate <= date("now") AND
+                deleted = 0
+            ORDER BY
+                dueDate DESC
+            """ +
+            f"LIMIT {limit};" if limit is not None else ";"
+            ,
+            constructor=lambda r: ChineseDataWithStats(
+                r.value(0), # id
+                r.value(1), # simplified
+                r.value(2), # traditional
+                r.value(3), # pinyin
+                r.value(4), # english
+                r.value(5), # classifier
+                r.value(6), # taiwanPinyin
+                r.value(7), # wordsWithSamePinyin
+                r.value(8), # timesSeen
+                r.value(9), # timesCorrect
+                r.value(10),# lastTimeSeen
+                r.value(11),# lastTimeCorrect
+                r.value(12),# dueDate
+                r.value(13) # easeFactor
             )
-                AS
-                    temp
-            ;
-            """
         )
-        if result == "": # Empty table
-            return float("NaN")
-        else:
-            return float(result)
 
     def getPhrasesWithSameLogographs(self, simplified: str, originalID: int) -> list[ChineseDataWithStats]:
         """
@@ -250,51 +293,57 @@ class ChineseDB(Database):
             _originalID=originalID
         )
 
-    def getPhrases(self, level: HSK_LEVEL, maxOrdinalID: int) -> list[ChineseDataWithStats]:
-        """Gets a list of phrase data given a particular level and an upper bound in that level"""
-        return self._execQueryGetResults(
+    def getResponseTimeAverage(self) -> float:
+        """Returns the average response time"""
+        result = self._execQueryGetResult(
             query="""
             SELECT
-                id,
-                simplified,
-                traditional,
-                pinyin,
-                english,
-                classifier,
-                taiwanPinyin,
-                wordsWithSamePinyin,
-                timesSeen,
-                timesCorrect,
-                lastTimeSeen,
-                lastTimeCorrect,
-                dueDate,
-                easeFactor
+                AVG(responseTime)
             FROM
-                chinesePhrases
-            WHERE
-                band = :_band AND
-                ordinalID <= :_maxOrdinalID AND
-                deleted = 0;
-            """,
-            constructor=lambda r: ChineseDataWithStats(
-                r.value(0), # id
-                r.value(1), # simplified
-                r.value(2), # traditional
-                r.value(3), # pinyin
-                r.value(4), # english
-                r.value(5), # classifier
-                r.value(6), # taiwanPinyin
-                r.value(7), # wordsWithSamePinyin
-                r.value(8), # timesSeen
-                r.value(9), # timesCorrect
-                r.value(10),# lastTimeSeen
-                r.value(11),# lastTimeCorrect
-                r.value(12),# dueDate
-                r.value(13) # easeFactor
-            ),
-            _band=ChineseDB.bands[level],
-            _maxOrdinalID=maxOrdinalID
+                responseTimes;
+            """
         )
+        if result == "": # Empty table
+            return float("NaN")
+        else:
+            return float(result)
+    
+    def getResponseTimeCount(self) -> int:
+        """Returns the number of response times"""
+        return int(self._execQueryGetResult(
+            query="""
+            SELECT
+                COUNT(1)
+            FROM
+                responseTimes;
+            """
+        ))
+
+    def getResponseTimeVariance(self) -> float:
+        """Returns the variance in response times"""
+        result = self._execQueryGetResult(
+            query="""
+            SELECT
+                AVG((responseTimes.responseTime - temp.avg) * (responseTimes.responseTime - temp.avg))
+            FROM
+                responseTimes,
+            (
+                SELECT
+                    AVG(responseTime)
+                AS
+                    avg
+                FROM
+                    responseTimes
+            )
+                AS
+                    temp
+            ;
+            """
+        )
+        if result == "": # Empty table
+            return float("NaN")
+        else:
+            return float(result)
 
     def initializeDB(self) -> bool:
         """Creates table schemas"""

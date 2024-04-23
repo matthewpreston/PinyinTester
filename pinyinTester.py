@@ -11,14 +11,11 @@ from enum import Enum
 import random
 import sys
 
-from baseClasses import LABEL_SIDE, LEARNING_LEVEL
-from chineseClasses import HSK_LEVEL
-from chineseDatabase import ChineseDB, ChineseDataWithStats
-
 from bs4 import BeautifulSoup
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
-from PyQt6.QtWidgets import (
+import darkdetect
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QGridLayout,
@@ -33,11 +30,9 @@ from PyQt6.QtWidgets import (
     QWidget
 )
 
-tempDB = {
-    "你好": "ni3hao3",
-    "再见": "zai4jian4",
-    "没关系": "mei2guan1xi5"
-}
+from baseClasses import LABEL_SIDE, LEARNING_LEVEL
+from chineseClasses import HSK_LEVEL
+from chineseDatabase import ChineseDB, ChineseDataWithStats
 
 WINDOW_WIDTH = 600
 WINDOW_HEIGHT = 600
@@ -49,6 +44,13 @@ class View(QMainWindow):
         SETUP = 1
         TESTING = 2
     
+    class COLOR(Enum):
+        CLEAR   = "#00000000"
+        BLACK   = "#FF000000"
+        WHITE   = "#FFFFFFFF"
+        RED     = "#FFFF0000"
+        GREEN   = "#FF00FF00"
+
     checkboxLabels = {
         HSK_LEVEL.HSK_1: "HSK Band 1",
         HSK_LEVEL.HSK_2: "HSK Band 2",
@@ -102,6 +104,9 @@ class View(QMainWindow):
         self.buttonBack = QPushButton("Back")
         self.buttonBack.setMaximumWidth(100)
         self.layoutHeader.addWidget(self.buttonBack)
+        self.buttonEdit = QPushButton("Edit")
+        self.buttonEdit.setMaximumWidth(100)
+        self.layoutHeader.addWidget(self.buttonEdit)
         self.buttonDelete = QPushButton("Delete")
         self.buttonDelete.setMaximumWidth(100)
         self.layoutHeader.addWidget(self.buttonDelete)
@@ -196,8 +201,8 @@ class View(QMainWindow):
 
     def hideAnswer(self) -> None:
         """Hides answer and its details"""
-        self.labelPinyin.setStyleSheet("color: #00000000") # Nothing
-        self.labelDetails.setStyleSheet("color: #00000000")
+        self.labelPinyin.setStyleSheet(f"color: {View.COLOR.CLEAR.value}")
+        self.labelDetails.setStyleSheet(f"color: {View.COLOR.CLEAR.value}")
 
     def setCheckBoxState(self, level: LEARNING_LEVEL, state: bool) -> None:
         """Sets particular check box to a given state"""
@@ -215,13 +220,19 @@ class View(QMainWindow):
 
     def setAnswerCorrect(self) -> None:
         """If answer was correct, show it in green and unhide description"""
-        self.labelPinyin.setStyleSheet("color: #FF00FF00") # Green
-        self.labelDetails.setStyleSheet("color: #FF000000")
+        self.labelPinyin.setStyleSheet(f"color: {View.COLOR.GREEN.value}")
+        if darkdetect.isLight():
+            self.labelDetails.setStyleSheet(f"color: {View.COLOR.BLACK.value}")
+        else:
+            self.labelDetails.setStyleSheet(f"color: {View.COLOR.WHITE.value}")
 
     def setAnswerWrong(self) -> None:
         """If answer was incorrect, show it in red and unhide description"""
-        self.labelPinyin.setStyleSheet("color: #FFFF0000") # Red
-        self.labelDetails.setStyleSheet("color: #FF000000")
+        self.labelPinyin.setStyleSheet(f"color: {View.COLOR.RED.value}")
+        if darkdetect.isLight():
+            self.labelDetails.setStyleSheet(f"color: {View.COLOR.BLACK.value}")
+        else:
+            self.labelDetails.setStyleSheet(f"color: {View.COLOR.WHITE.value}")
 
     def setSliderMaximum(self, level: LEARNING_LEVEL, maximum: int) -> None:
         """Set particular slider's maximum"""
@@ -233,8 +244,12 @@ class View(QMainWindow):
 
     def unhideAnswer(self) -> None:
         """Unhides answer and its details"""
-        self.labelPinyin.setStyleSheet("color: #FF000000") # Black
-        self.labelDetails.setStyleSheet("color: #FF000000")
+        if darkdetect.isLight():
+            self.labelPinyin.setStyleSheet(f"color: {View.COLOR.BLACK.value}")
+            self.labelDetails.setStyleSheet(f"color: {View.COLOR.BLACK.value}")
+        else:
+            self.labelPinyin.setStyleSheet(f"color: {View.COLOR.WHITE.value}")
+            self.labelDetails.setStyleSheet(f"color: {View.COLOR.WHITE.value}")
 
 
 class Model():
@@ -552,6 +567,7 @@ class Controller():
             messageBox.exec()
             return
         self.loadNextQuestion()
+        self.hasChecked = False
         self.view.loadTestingView()
 
     def checkAnswer(self) -> None:
@@ -585,6 +601,7 @@ class Controller():
 
         # Testing view
         self.view.buttonBack.clicked.connect(self.backToSetup)
+        self.view.buttonEdit.clicked.connect(self.editEntry)
         self.view.buttonDelete.clicked.connect(self.deleteEntry)
         self.view.buttonCheck.clicked.connect(self.checkAnswer)
         self.view.lineEditPinyin.returnPressed.connect(self.returnPressed)
@@ -610,6 +627,10 @@ class Controller():
                 pass
             case _:
                 pass
+
+    def editEntry(self) -> None:
+        """Edits current entry"""
+        raise NotImplementedError
 
     def initializeSetupView(self) -> None:
         """In the View's setup view, give the first and last phrases"""

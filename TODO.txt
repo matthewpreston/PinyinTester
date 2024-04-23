@@ -1,4 +1,7 @@
 - modify card feature during testing phase
+- go back to previous card that was tested
+    - maybe even have it be a large list so you can keep going back in time like how Anki does
+- number of dots to display which shows what level of QUALITY one got for answering kinda like how Anki does
 - deleted card graveyard revival
 - cardbox Feature
 - fix where if no entries left in level, would throw uncaught exception in Model.getRandomPhraseInLevel

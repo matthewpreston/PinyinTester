@@ -6,8 +6,8 @@ from functools import partial
 from typing import Callable
 import sys
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import (
     QApplication,
     QGridLayout,
     QLineEdit,

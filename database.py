@@ -3,10 +3,10 @@
 from collections.abc import Callable
 import datetime
 
-from baseClasses import LEARNING_LEVEL
-
 import parse
-from PyQt6.QtSql import QSqlDatabase, QSqlQuery
+from PySide6.QtSql import QSqlDatabase, QSqlQuery
+
+from baseClasses import LEARNING_LEVEL
 
 class Data:
     def __init__(self) -> None:
@@ -90,6 +90,10 @@ class Database:
     
     def getPhrases(self, level: LEARNING_LEVEL, maxOrdinalID: int) -> list[Data]:
         """Gets a list of phrase data given a particular level and an upper bound in that level"""
+        raise NotImplementedError
+
+    def getPhrasesDueToday(self, limit: int=None) -> list[Data]:
+        """Gets a list of phrases that are due today (i.e. date <= now())"""
         raise NotImplementedError
 
     def getResponseTimeAverage(self) -> float:
