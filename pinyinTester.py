@@ -529,17 +529,23 @@ class Model():
         else:
             return datetime.datetime.now() + datetime.timedelta(days=int(interval*newEase))
 
-    def checkAnswer(self, userInput: str) -> tuple[ANSWER_STATE, QUALITY]:
+    def checkAnswer(self, userInput: str, ignoreTones: bool=False) -> tuple[ANSWER_STATE, QUALITY]:
         """Return true if correct pinyin for given chinese phrase"""
+        # Create a dummy function to handle tone marks
+        if ignoreTones:
+            l = lambda s: "".join([c for c in s if not c.isdigit()])
+        else:
+            l = lambda s: s
+
         # Pinyin has HTML tags so extract the element within
-        i = userInput.lower().replace(' ','')
-        if i == Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower():
+        i = l(userInput.lower().replace(' ',''))
+        if i == l(Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower()):
             quality = self._updateDatabase(ANSWER_STATE.CORRECT, True)
             return (ANSWER_STATE.CORRECT, quality)
         
         # Check against homonyms
         for p in self.phrasesWithSameLogographs:
-            if i == Model.getPinyinBetweenTags(p.pinyin).lower():
+            if i == l(Model.getPinyinBetweenTags(p.pinyin).lower()):
                 quality = self._updateDatabase(ANSWER_STATE.HOMONYM, False)
                 return (ANSWER_STATE.HOMONYM, quality)
         
@@ -651,7 +657,7 @@ class Controller():
         if self.hasChecked: # User already checked or hit Next, no point checking
             return
         self.hasChecked = True
-        answer, quality = self.model.checkAnswer(self.view.getInput())
+        answer, quality = self.model.checkAnswer(self.view.getInput(), False)
         self.view.setQuality(quality)
         match answer:
             case ANSWER_STATE.CORRECT:
@@ -687,6 +693,11 @@ class Controller():
         """Edits current entry"""
         raise NotImplementedError
 
+    def flashQuality(self, /, delay: int=1000) -> None:
+        """Shows quality on screen briefly"""
+        self.view.showQuality()
+        QTimer.singleShot(delay, self.view.clearQuality)
+
     def loadNextQuestion(self) -> None:
         """Fetches next question and loads it to view"""
         level = random.choice(self.activeLearningLevels)
@@ -702,8 +713,6 @@ class Controller():
         prompt = Model.getPromptFromData(data)
         answer = Model.getAnswerFromData(data)
         details = Model.getDetailsFromData(data)
-        self.view.showQuality()
-        QTimer.singleShot(1000, self.view.clearQuality)
         self.view.loadNextQuestion(prompt, answer, details)
         self.hasChecked = False
 
@@ -744,6 +753,7 @@ class Controller():
         """
         if self.hasChecked:
             self.loadNextQuestion()
+            self.flashQuality()
         else:
             self.view.unhideAnswer()
             self.hasChecked = True
