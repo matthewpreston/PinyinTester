@@ -13,7 +13,7 @@ import sys
 
 from bs4 import BeautifulSoup
 import darkdetect
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget
 )
 
-from baseClasses import LABEL_SIDE, LEARNING_LEVEL
+from baseClasses import LABEL_SIDE, LEARNING_LEVEL, ANSWER_STATE, QUALITY
 from chineseClasses import HSK_LEVEL
 from chineseDatabase import ChineseDB, ChineseDataWithStats
 
@@ -49,7 +49,11 @@ class View(QMainWindow):
         BLACK   = "#FF000000"
         WHITE   = "#FFFFFFFF"
         RED     = "#FFFF0000"
+        ORANGE  = "#FFFFA500"
+        YELLOW  = "#FFFFFF00"
         GREEN   = "#FF00FF00"
+        BLUE    = "#FF0000FF"
+        PURPLE  = "#FF800080"
 
     checkboxLabels = {
         HSK_LEVEL.HSK_1: "HSK Band 1",
@@ -64,7 +68,9 @@ class View(QMainWindow):
     def __init__(self, windowWidth: int, windowHeight: int) -> None:
         super().__init__()
     
-        self.state = View.STATE.NULL
+        self.state: View.STATE = View.STATE.NULL
+        self.quality: QUALITY = None
+
         self.setWindowTitle("Pinyin Tester")
         self.setFixedSize(windowWidth, windowHeight)
 
@@ -111,6 +117,10 @@ class View(QMainWindow):
         self.buttonDelete.setMaximumWidth(100)
         self.layoutHeader.addWidget(self.buttonDelete)
         self.testingLayout.addLayout(self.layoutHeader)
+        self.labelQuality = QLabel()
+        self.labelQuality.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        self.labelQuality.setFont(QFont("Arial", 10))
+        self.testingLayout.addWidget(self.labelQuality)
         self.labelChinese = QLabel()
         self.labelChinese.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.labelChinese.setFont(QFont("Arial", 60))
@@ -142,6 +152,10 @@ class View(QMainWindow):
     def clearInput(self) -> None:
         """Sets textbox to blank"""
         self.labelPinyin.setText("")
+
+    def clearQuality(self) -> None:
+        """Hides quality text"""
+        self.labelQuality.setText("")
 
     def getAnswer(self) -> str:
         """Returns what the answer should be"""
@@ -218,6 +232,10 @@ class View(QMainWindow):
             case _:
                 pass
 
+    def setQuality(self, quality: QUALITY) -> None:
+        """Sets quality"""
+        self.quality = quality
+
     def setAnswerCorrect(self) -> None:
         """If answer was correct, show it in green and unhide description"""
         self.labelPinyin.setStyleSheet(f"color: {View.COLOR.GREEN.value}")
@@ -241,6 +259,32 @@ class View(QMainWindow):
     def setSliderPosition(self, level: LEARNING_LEVEL, position: int) -> None:
         """Set particular slider's position"""
         self.sliders[level].setSliderPosition(position)
+
+    def showQuality(self) -> None:
+        """Shows the user what quality their answer was"""
+        if self.quality is None:
+            return
+        match self.quality:
+            case QUALITY.FIVE:
+                self.labelQuality.setText("******")
+                self.labelQuality.setStyleSheet(f"color: {View.COLOR.PURPLE.value}")
+            case QUALITY.FOUR:
+                self.labelQuality.setText("*****")
+                self.labelQuality.setStyleSheet(f"color: {View.COLOR.BLUE.value}")
+            case QUALITY.THREE:
+                self.labelQuality.setText("****")
+                self.labelQuality.setStyleSheet(f"color: {View.COLOR.GREEN.value}")
+            case QUALITY.TWO:
+                self.labelQuality.setText("***")
+                self.labelQuality.setStyleSheet(f"color: {View.COLOR.YELLOW.value}")
+            case QUALITY.ONE:
+                self.labelQuality.setText("**")
+                self.labelQuality.setStyleSheet(f"color: {View.COLOR.ORANGE.value}")
+            case QUALITY.ZERO:
+                self.labelQuality.setText("*")
+                self.labelQuality.setStyleSheet(f"color: {View.COLOR.RED.value}")
+            case _:
+                pass
 
     def unhideAnswer(self) -> None:
         """Unhides answer and its details"""
@@ -282,21 +326,7 @@ class Model():
         'À':'A','È':'E','Ì':'I','Ò':'O','Ù':'U','Ǜ':'V'
     }
 
-    class ANSWER_STATE(Enum):
-        CORRECT=0
-        WRONG=1
-        HOMONYM=2
-
-    class QUALITY(Enum):
-        """Qualities used for SuperMemo 2 (SM-2) algorithm"""
-        FIVE = 5    # Perfect response
-        FOUR = 4    # Correct response after hesitation
-        THREE = 3   # Correct response but with serious difficulty
-        TWO = 2     # Incorrect response with a quick response
-        ONE = 1     # Incorrect response that matches a different answer
-        ZERO = 0    # Incorrect response with no recollection
-
-    def __init__(self, vocabularyFiles: list[str], databaseFile: str) -> None:
+    def __init__(self, vocabularyFiles: list[str], databaseFile: str, /, newUnseenCardChance: float=0.3) -> None:
         self.vocabularies = self._getChineseVocabularies(vocabularyFiles)
         self.maximums = self._getMaximums()
         self.chineseDB = ChineseDB(databaseFile)
@@ -304,6 +334,9 @@ class Model():
         self.currentPhrase: ChineseDataWithStats = None
         self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
         self.start: datetime.datetime = None
+        if newUnseenCardChance >= 1:
+            raise ValueError
+        self.newUnseenCardChance = newUnseenCardChance
 
     def _assessQuality(self, answerState: ANSWER_STATE) -> QUALITY:
         """Updates quality member based on timing and correctness of response"""
@@ -312,35 +345,35 @@ class Model():
         delta = float(temp.seconds) + (temp.microseconds / 1000000)
         num = self.chineseDB.getResponseTimeCount()
         match answerState:
-            case Model.ANSWER_STATE.CORRECT:
+            case ANSWER_STATE.CORRECT:
                 if num >= 100:
                     avg = self.chineseDB.getResponseTimeAverage()
                     std = self.chineseDB.getResponseTimeVariance() ** 0.5
                     if delta <= (avg - std):
-                        return Model.QUALITY.FIVE
+                        return QUALITY.FIVE
                     elif delta <= (avg + std):
-                        return Model.QUALITY.FOUR
+                        return QUALITY.FOUR
                     else:
-                        return Model.QUALITY.THREE
+                        return QUALITY.THREE
                 else: # Not enough empirical data
-                    return Model.QUALITY.FOUR
-            case Model.ANSWER_STATE.HOMONYM:
+                    return QUALITY.FOUR
+            case ANSWER_STATE.HOMONYM:
                 # Can't ever give a 5/5 rating
                 if num >= 100:
                     avg = self.chineseDB.getResponseTimeAverage()
                     std = self.chineseDB.getResponseTimeVariance() ** 0.5
                     if delta <= (avg - std):
-                        return Model.QUALITY.FOUR
+                        return QUALITY.FOUR
                     else:
-                        return Model.QUALITY.THREE
+                        return QUALITY.THREE
                 else: # Not enough empirical data
-                    return Model.QUALITY.THREE
-            case Model.ANSWER_STATE.WRONG:
+                    return QUALITY.THREE
+            case ANSWER_STATE.WRONG:
                 if num >= 100:
                     avg = self.chineseDB.getResponseTimeAverage()
                     std = self.chineseDB.getResponseTimeVariance() ** 0.5
                     if delta <= (avg - std):
-                        return Model.QUALITY.TWO
+                        return QUALITY.TWO
                 numDifferentAnswers = len(
                     self.chineseDB.getPhrasesWithSamePinyin(
                         self.currentPhrase.pinyin, 
@@ -348,13 +381,13 @@ class Model():
                     )
                 )
                 if numDifferentAnswers > 0:
-                    return Model.QUALITY.ONE
+                    return QUALITY.ONE
                 else:
-                    return Model.QUALITY.ZERO
+                    return QUALITY.ZERO
             case _:
                 pass
         # Dunno how it got here so just give a meh rating
-        return Model.QUALITY.TWO
+        return QUALITY.TWO
 
     def _getChineseVocabularies(self, chineseVocabularyFiles: list[str]) -> dict[HSK_LEVEL, list[str]]:
         """Reads a list of files and harvests the first column"""
@@ -377,7 +410,7 @@ class Model():
         """Returns list of phrases with the same logograph but not with the same original ID"""
         return self.chineseDB.getPhrasesWithSameLogographs(logograph, originalID)
 
-    def _updateDatabase(self, answerState: ANSWER_STATE, wasCorrect: bool) -> None:
+    def _updateDatabase(self, answerState: ANSWER_STATE, wasCorrect: bool) -> QUALITY:
         """Updates Chinese phrase data and inserts the response time"""
         quality = self._assessQuality(answerState)
         self.chineseDB.updatePhrase(
@@ -402,6 +435,7 @@ class Model():
             timeStamp=datetime.datetime.now(),
             responseTime=delta
         )
+        return quality
 
     @staticmethod
     def convertDiacriticToNumber(pinyin: str) -> str:
@@ -461,17 +495,17 @@ class Model():
     def updateEaseFactor(oldEaseFactor: float, quality: QUALITY) -> float:
         """Returns new ease factor with clamping"""
         match quality:
-            case Model.QUALITY.FIVE:
+            case QUALITY.FIVE:
                 return max(1.3, oldEaseFactor + 0.10)
-            case Model.QUALITY.FOUR:
+            case QUALITY.FOUR:
                 return max(1.3, oldEaseFactor + 0.00)
-            case Model.QUALITY.THREE:
+            case QUALITY.THREE:
                 return max(1.3, oldEaseFactor - 0.14)
-            case Model.QUALITY.TWO:
+            case QUALITY.TWO:
                 return max(1.3, oldEaseFactor - 0.32)
-            case Model.QUALITY.ONE:
+            case QUALITY.ONE:
                 return max(1.3, oldEaseFactor - 0.54)
-            case Model.QUALITY.ZERO:
+            case QUALITY.ZERO:
                 return max(1.3, oldEaseFactor - 0.80)
             case _:
                 return oldEaseFactor
@@ -480,7 +514,7 @@ class Model():
     def updateDueDate(lastTimeSeen: str, oldDueDate: str, oldEaseFactor: float, quality: QUALITY) -> datetime.datetime:
         """Provides the next due date in YYYY-MM-DD HH:MM:SS"""
         # Check if user failed
-        if quality in [Model.QUALITY.ZERO, Model.QUALITY.ONE, Model.QUALITY.TWO]:
+        if quality in [QUALITY.ZERO, QUALITY.ONE, QUALITY.TWO]:
             return datetime.datetime.now() + datetime.timedelta(days=1)
         # Check if it's the first time this card has ever been seen
         if lastTimeSeen == "0" or oldDueDate == "0":
@@ -495,23 +529,23 @@ class Model():
         else:
             return datetime.datetime.now() + datetime.timedelta(days=int(interval*newEase))
 
-    def checkAnswer(self, userInput: str) -> ANSWER_STATE:
+    def checkAnswer(self, userInput: str) -> tuple[ANSWER_STATE, QUALITY]:
         """Return true if correct pinyin for given chinese phrase"""
         # Pinyin has HTML tags so extract the element within
         i = userInput.lower().replace(' ','')
         if i == Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower():
-            self._updateDatabase(Model.ANSWER_STATE.CORRECT, True)
-            return Model.ANSWER_STATE.CORRECT
+            quality = self._updateDatabase(ANSWER_STATE.CORRECT, True)
+            return (ANSWER_STATE.CORRECT, quality)
         
         # Check against homonyms
         for p in self.phrasesWithSameLogographs:
             if i == Model.getPinyinBetweenTags(p.pinyin).lower():
-                self._updateDatabase(Model.ANSWER_STATE.HOMONYM, False)
-                return Model.ANSWER_STATE.HOMONYM
+                quality = self._updateDatabase(ANSWER_STATE.HOMONYM, False)
+                return (ANSWER_STATE.HOMONYM, quality)
         
         # Boowomp
-        self._updateDatabase(Model.ANSWER_STATE.WRONG, False)
-        return Model.ANSWER_STATE.WRONG
+        quality = self._updateDatabase(ANSWER_STATE.WRONG, False)
+        return (ANSWER_STATE.WRONG, quality)
 
     def close(self) -> None:
         self.chineseDB.close()
@@ -534,10 +568,12 @@ class Model():
 
     def getRandomPhraseInLevel(self, level: LEARNING_LEVEL, maximumBound: int, limit: int=None) -> ChineseDataWithStats:
         """Returns a random phrase in (chinese, pinyin, details)"""
-        # First, get through all the ones due today
-        phrases = self.chineseDB.getPhrasesDueToday(level, maximumBound, limit)
+        phrases = []
+        # Test a chance just to choose a new unseen card instead of chugging through old cards
+        if random.random() >= self.newUnseenCardChance:
+            phrases = self.chineseDB.getPhrasesDueToday(level, maximumBound, limit)
         if len(phrases) == 0:
-            # None were due today, get some other phrases
+            # None were due today/failed the chance, get some other phrases
             phrases = self.chineseDB.getPhrases(level, maximumBound)
             if len(phrases) == 0:
                 # Still no phrases to choose from
@@ -559,10 +595,41 @@ class Controller():
         self.activeLearningLevels = [l for l in learningLevels]
         self.hasChecked = False
 
-        self.initializeSetupView()
-        self.connectSignalAndSlots()
+        self._initializeSetupView()
+        self._connectSignalAndSlots()
         self.view.loadSetupView()
-    
+
+    def _connectSignalAndSlots(self) -> None:
+        """Hooks up model to view"""
+        # Setup view
+        for level in self.learningLevels:
+            self.view.checkboxes[level].clicked.connect(
+                self.manageLearningLevels(level)
+            )
+            self.view.sliders[level].valueChanged.connect(
+                self.updateLabel(LABEL_SIDE.END, level)
+            )
+        self.view.buttonBegin.clicked.connect(self.beginTesting)
+
+        # Testing view
+        self.view.buttonBack.clicked.connect(self.backToSetup)
+        self.view.buttonEdit.clicked.connect(self.editEntry)
+        self.view.buttonDelete.clicked.connect(self.deleteEntry)
+        self.view.buttonCheck.clicked.connect(self.checkAnswer)
+        self.view.lineEditPinyin.returnPressed.connect(self.returnPressed)
+        self.view.buttonNext.clicked.connect(self.nextQuestion)
+
+    def _initializeSetupView(self) -> None:
+        """In the View's setup view, give the first and last phrases"""
+        for level in self.learningLevels:
+            self.view.setCheckBoxState(level, True)
+            firstPhrase, firstIndex = self.model.getFirstPhraseInLevel(level)
+            self.view.setLabel(LABEL_SIDE.START, level, firstPhrase, firstIndex)
+            lastPhrase, lastIndex = self.model.getLastPhraseInLevel(level)
+            self.view.setSliderMaximum(level, lastIndex)
+            self.view.setSliderPosition(level, lastIndex)
+            self.view.setLabel(LABEL_SIDE.END, level, lastPhrase, lastIndex)
+
     def backToSetup(self) -> None:
         """Return to setup view"""
         self.view.loadSetupView()
@@ -584,35 +651,17 @@ class Controller():
         if self.hasChecked: # User already checked or hit Next, no point checking
             return
         self.hasChecked = True
-        match self.model.checkAnswer(self.view.getInput()):
-            case Model.ANSWER_STATE.CORRECT:
+        answer, quality = self.model.checkAnswer(self.view.getInput())
+        self.view.setQuality(quality)
+        match answer:
+            case ANSWER_STATE.CORRECT:
                 self.view.setAnswerCorrect()
-            case Model.ANSWER_STATE.WRONG:
+            case ANSWER_STATE.WRONG:
                 self.view.setAnswerWrong()
-            case Model.ANSWER_STATE.HOMONYM:
+            case ANSWER_STATE.HOMONYM:
                 self.view.unhideAnswer()
             case _:
                 pass
-
-    def connectSignalAndSlots(self) -> None:
-        """Hooks up model to view"""
-        # Setup view
-        for level in self.learningLevels:
-            self.view.checkboxes[level].clicked.connect(
-                self.manageLearningLevels(level)
-            )
-            self.view.sliders[level].valueChanged.connect(
-                self.updateLabel(LABEL_SIDE.END, level)
-            )
-        self.view.buttonBegin.clicked.connect(self.beginTesting)
-
-        # Testing view
-        self.view.buttonBack.clicked.connect(self.backToSetup)
-        self.view.buttonEdit.clicked.connect(self.editEntry)
-        self.view.buttonDelete.clicked.connect(self.deleteEntry)
-        self.view.buttonCheck.clicked.connect(self.checkAnswer)
-        self.view.lineEditPinyin.returnPressed.connect(self.returnPressed)
-        self.view.buttonNext.clicked.connect(self.nextQuestion)
 
     def deleteEntry(self) -> None:
         """Deletes currently shown entry"""
@@ -638,17 +687,6 @@ class Controller():
         """Edits current entry"""
         raise NotImplementedError
 
-    def initializeSetupView(self) -> None:
-        """In the View's setup view, give the first and last phrases"""
-        for level in self.learningLevels:
-            self.view.setCheckBoxState(level, True)
-            firstPhrase, firstIndex = self.model.getFirstPhraseInLevel(level)
-            self.view.setLabel(LABEL_SIDE.START, level, firstPhrase, firstIndex)
-            lastPhrase, lastIndex = self.model.getLastPhraseInLevel(level)
-            self.view.setSliderMaximum(level, lastIndex)
-            self.view.setSliderPosition(level, lastIndex)
-            self.view.setLabel(LABEL_SIDE.END, level, lastPhrase, lastIndex)
-
     def loadNextQuestion(self) -> None:
         """Fetches next question and loads it to view"""
         level = random.choice(self.activeLearningLevels)
@@ -659,11 +697,13 @@ class Controller():
             messageBox.setWindowTitle("Error")
             messageBox.setText("No phrases were found in the levels and selections provided. Please expand the scope or add to the database.")
             messageBox.exec()
-            self.view.loadSetupView()
+            self.backToSetup()
             return
         prompt = Model.getPromptFromData(data)
         answer = Model.getAnswerFromData(data)
         details = Model.getDetailsFromData(data)
+        self.view.showQuality()
+        QTimer.singleShot(1000, self.view.clearQuality)
         self.view.loadNextQuestion(prompt, answer, details)
         self.hasChecked = False
 
