@@ -376,11 +376,6 @@ class Model():
                 else: # Not enough empirical data
                     return QUALITY.THREE
             case ANSWER_STATE.WRONG:
-                if num >= 100:
-                    avg = self.chineseDB.getResponseTimeAverage()
-                    std = self.chineseDB.getResponseTimeVariance() ** 0.5
-                    if delta <= (avg - std):
-                        return QUALITY.TWO
                 numDifferentAnswers = len(
                     self.chineseDB.getPhrasesWithSamePinyin(
                         self.currentPhrase.pinyin, 
@@ -388,6 +383,13 @@ class Model():
                     )
                 )
                 if numDifferentAnswers > 0:
+                    if num >= 100:
+                        avg = self.chineseDB.getResponseTimeAverage()
+                        std = self.chineseDB.getResponseTimeVariance() ** 0.5
+                        if delta <= (avg - std):
+                            return QUALITY.TWO
+                        else:
+                            return QUALITY.ONE
                     return QUALITY.ONE
                 else:
                     return QUALITY.ZERO
@@ -784,7 +786,15 @@ class Controller():
 
     def loadNextQuestion(self) -> None:
         """Fetches next question and loads it to view"""
-        level = random.choice(self.activeLearningLevels)
+        # Get a random level uniformly
+        r = random.randint(1, sum([self.view.getSliderValue(l) for l in self.activeLearningLevels]))
+        for l in self.activeLearningLevels:
+            v = self.view.getSliderValue(l)
+            if r <= v:
+                level = l
+                break
+            else:
+                r = r - v
         try:
             data = self.model.getRandomPhraseInLevel(level, self.view.getSliderValue(level)-1)
         except IndexError: # No phrases to choose from
