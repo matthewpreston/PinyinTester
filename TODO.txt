@@ -3,3 +3,5 @@
     - maybe even have it be a large list so you can keep going back in time like how Anki does
 - number of dots to display which shows what level of QUALITY one got for answering kinda like how Anki does
 - deleted card graveyard revival
+- make a .ini file to remember the state of what the user wants to test
+    - test if .ini is blank/None, then go to default

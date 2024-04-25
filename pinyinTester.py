@@ -5,6 +5,7 @@
 #
 # 你好 -> ni3hao3
 
+import configparser
 from collections.abc import Callable
 import datetime
 from enum import Enum
@@ -67,7 +68,6 @@ class View(QMainWindow):
 
     def __init__(self, windowWidth: int, windowHeight: int) -> None:
         super().__init__()
-    
         self.state: View.STATE = View.STATE.NULL
         self.quality: QUALITY = None
 
@@ -75,7 +75,11 @@ class View(QMainWindow):
         self.setFixedSize(windowWidth, windowHeight)
 
         # Construct views
-        # ==== Setup view ====
+        self._createSetupView(windowWidth, windowHeight)
+        self._createTestingView(windowWidth, windowHeight)
+
+    def _createSetupView(self, windowWidth: int, windowHeight: int) -> None:
+        """Creates all the widgets used in the setup view"""
         self.setupView = QWidget(self)
         self.setupLayout = QVBoxLayout()
         self.gridLayout = QGridLayout()
@@ -103,13 +107,14 @@ class View(QMainWindow):
         self.setupLayout.addWidget(self.buttonBegin, alignment=Qt.AlignmentFlag.AlignHCenter)
         self.setupView.setLayout(self.setupLayout)
 
-        # ==== Testing view ====
+    def _createTestingView(self, windowWidth: int, windowHeight: int) -> None:
+        """Creates all the widgets used in the testing view"""
         self.testingView = QWidget(self)
         self.testingLayout = QVBoxLayout()
         self.layoutHeader = QHBoxLayout()
-        self.buttonBack = QPushButton("Back")
-        self.buttonBack.setMaximumWidth(100)
-        self.layoutHeader.addWidget(self.buttonBack)
+        self.buttonExitTesting = QPushButton("Exit Testing")
+        self.buttonExitTesting.setMaximumWidth(100)
+        self.layoutHeader.addWidget(self.buttonExitTesting)
         self.buttonEdit = QPushButton("Edit")
         self.buttonEdit.setMaximumWidth(100)
         self.layoutHeader.addWidget(self.buttonEdit)
@@ -142,11 +147,13 @@ class View(QMainWindow):
         self.lineEditPinyin.setFont(QFont("Arial", 40))
         self.testingLayout.addWidget(self.lineEditPinyin)
         self.testingButtonLayout = QHBoxLayout()
-        self.buttonCheck = QPushButton("Check")
-        self.testingButtonLayout.addWidget(self.buttonCheck)
+        self.buttonBack = QPushButton("Back")
+        self.testingButtonLayout.addWidget(self.buttonBack)
         self.buttonNext = QPushButton("Next")
         self.testingButtonLayout.addWidget(self.buttonNext)
         self.testingLayout.addLayout(self.testingButtonLayout)
+        self.buttonCheck = QPushButton("Check")
+        self.testingLayout.addWidget(self.buttonCheck)
         self.testingView.setLayout(self.testingLayout)
 
     def clearInput(self) -> None:
@@ -594,13 +601,18 @@ class Model():
 class Controller():
     """Links view to model"""
 
-    def __init__(self, model: Model, view: View, learningLevels: LEARNING_LEVEL) -> None:
+    def __init__(self, model: Model, view: View, learningLevels: LEARNING_LEVEL, /, iniFile: str=None) -> None:
+        self._did_iniReadFail = False
         self.model = model
         self.view  = view
         self.learningLevels = learningLevels
-        self.activeLearningLevels = [l for l in learningLevels]
+        self.iniFile = iniFile
+        self.activeLearningLevels: list[LEARNING_LEVEL] = []
+        self.activeLearningLevelEndRange: dict[LEARNING_LEVEL, int] = {}
         self.hasChecked = False
 
+        # Set up initialization state
+        self._read_ini() # Will set things to default if no .ini given
         self._initializeSetupView()
         self._connectSignalAndSlots()
         self.view.loadSetupView()
@@ -618,27 +630,94 @@ class Controller():
         self.view.buttonBegin.clicked.connect(self.beginTesting)
 
         # Testing view
-        self.view.buttonBack.clicked.connect(self.backToSetup)
+        self.view.buttonExitTesting.clicked.connect(self.returnToSetupView)
         self.view.buttonEdit.clicked.connect(self.editEntry)
         self.view.buttonDelete.clicked.connect(self.deleteEntry)
-        self.view.buttonCheck.clicked.connect(self.checkAnswer)
         self.view.lineEditPinyin.returnPressed.connect(self.returnPressed)
+        self.view.buttonBack.clicked.connect(self.previousQuestion)
         self.view.buttonNext.clicked.connect(self.nextQuestion)
+        self.view.buttonCheck.clicked.connect(self.checkAnswer)
+
+    def _initializeDefaultLearningLevels(self) -> None:
+        """In case .ini is not given or failed to read, initialize data to their maximums"""
+        self.activeLearningLevels = [l for l in self.learningLevels]
+        for l in self.learningLevels:
+            lastPhrase, lastIndex = self.model.getLastPhraseInLevel(l)
+            self.activeLearningLevelEndRange[l] = lastIndex
 
     def _initializeSetupView(self) -> None:
         """In the View's setup view, give the first and last phrases"""
         for level in self.learningLevels:
-            self.view.setCheckBoxState(level, True)
+            if level in self.activeLearningLevels:
+                self.view.setCheckBoxState(level, True)
+            else:
+                self.view.setCheckBoxState(level, False)
             firstPhrase, firstIndex = self.model.getFirstPhraseInLevel(level)
             self.view.setLabel(LABEL_SIDE.START, level, firstPhrase, firstIndex)
             lastPhrase, lastIndex = self.model.getLastPhraseInLevel(level)
             self.view.setSliderMaximum(level, lastIndex)
-            self.view.setSliderPosition(level, lastIndex)
-            self.view.setLabel(LABEL_SIDE.END, level, lastPhrase, lastIndex)
+            self.view.setSliderPosition(level, self.activeLearningLevelEndRange[level])
+            self.view.setLabel(
+                LABEL_SIDE.END,
+                level,
+                self.model.getPhraseInLevel(level, self.activeLearningLevelEndRange[level]-1),
+                self.activeLearningLevelEndRange[level]
+            )
 
-    def backToSetup(self) -> None:
-        """Return to setup view"""
-        self.view.loadSetupView()
+    def _read_ini(self) -> None:
+        """Parses .ini for its data"""
+        if self.iniFile is None:
+            self._initializeDefaultLearningLevels()
+            return
+        config = configparser.ConfigParser()
+        result = config.read(self.iniFile)
+        if len(result) == 0: # Failed to parse, set to defaults
+            self._did_iniReadFail = True
+            messageBox = QMessageBox(self.view)
+            messageBox.setWindowTitle("Error")
+            messageBox.setText(f"Unable to read {self.iniFile}. Please check its configuration. Setting to default settings.")
+            messageBox.exec()
+            self._initializeDefaultLearningLevels()
+            return
+        for l in self.learningLevels:
+            match config["DEFAULT"].getboolean(f"{l.name}_IsActive"):
+                case True:
+                    self.activeLearningLevels.append(l)
+                case False:
+                    pass
+                case _: # Was likely a None, thus call failed
+                    self._did_iniReadFail = True
+                    messageBox = QMessageBox(self.view)
+                    messageBox.setWindowTitle("Error")
+                    messageBox.setText(f"Unable to parse {self.iniFile} for section {l.name}_IsActive. Please check its configuration. Setting to default settings.")
+                    messageBox.exec()
+                    self._initializeDefaultLearningLevels()
+                    return
+            match r := config["DEFAULT"].getint(f"{l.name}_EndRange"):
+                case int():
+                    self.activeLearningLevelEndRange[l] = r
+                case _: # Was likely a None, thus call failed
+                    self._did_iniReadFail = True
+                    messageBox = QMessageBox(self.view)
+                    messageBox.setWindowTitle("Error")
+                    messageBox.setText(f"Unable to parse {self.iniFile} for section {l.name}_EndRange. Please check its configuration. Setting to default settings.")
+                    messageBox.exec()
+                    self._initializeDefaultLearningLevels()
+                    return
+
+    def _write_ini(self) -> None:
+        """Writes current state to .ini for next time"""
+        if self.iniFile is None or self._did_iniReadFail:
+            return
+        config = configparser.ConfigParser()
+        for l in self.learningLevels:
+            if l in self.activeLearningLevels:
+                config["DEFAULT"][f"{l.name}_IsActive"] = "True"
+            else:
+                config["DEFAULT"][f"{l.name}_IsActive"] = "False"
+            config["DEFAULT"][f"{l.name}_EndRange"] = f"{self.view.getSliderValue(l)}"
+        with open(self.iniFile, 'w') as configHandle:
+            config.write(configHandle)
 
     def beginTesting(self) -> None:
         if len(self.activeLearningLevels) == 0: # All were checked off
@@ -668,6 +747,11 @@ class Controller():
                 self.view.unhideAnswer()
             case _:
                 pass
+
+    def close(self) -> None:
+        """Cleans up and writes to .ini"""
+        self._write_ini()
+        self.model.close()
 
     def deleteEntry(self) -> None:
         """Deletes currently shown entry"""
@@ -708,7 +792,7 @@ class Controller():
             messageBox.setWindowTitle("Error")
             messageBox.setText("No phrases were found in the levels and selections provided. Please expand the scope or add to the database.")
             messageBox.exec()
-            self.backToSetup()
+            self.returnToSetupView()
             return
         prompt = Model.getPromptFromData(data)
         answer = Model.getAnswerFromData(data)
@@ -758,6 +842,10 @@ class Controller():
             self.view.unhideAnswer()
             self.hasChecked = True
 
+    def previousQuestion(self) -> None:
+        """Fetches previous question (along a doubly linked list)"""
+        raise NotImplementedError
+
     def returnPressed(self) -> None:
         """
         Special functionality for Enter button. Either check pinyin or go to
@@ -771,7 +859,11 @@ class Controller():
             else: # User has typed nothing but wants to see the answer
                 self.view.unhideAnswer()
                 self.hasChecked = True
-    
+
+    def returnToSetupView(self) -> None:
+        """Return to setup view"""
+        self.view.loadSetupView()
+
     def updateLabel(self, labelSide: LABEL_SIDE, learningLevel: LEARNING_LEVEL) -> Callable[[], None]:
         """When the slider was moved, changed what value the label shows"""
         def dummy() -> None:
@@ -789,10 +881,10 @@ def main(argv: list[str]) -> None:
     app.setStyleSheet("") # TODO
     view = View(WINDOW_WIDTH, WINDOW_HEIGHT)
     model = Model(argv[2:], argv[1])
-    controller = Controller(model, view, HSK_LEVEL)
+    controller = Controller(model, view, HSK_LEVEL, iniFile="settings.ini")
     view.show()
     result = app.exec()
-    model.close()
+    controller.close()
     sys.exit(result)
 
 if __name__ == "__main__":
