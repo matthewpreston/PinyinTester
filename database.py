@@ -1,10 +1,14 @@
 # Base classes for interacting with databases
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 import datetime
+import errno
+from pathlib import Path
+from typing import Self
 
 import parse
-from PySide6.QtSql import QSqlDatabase, QSqlQuery
+from PySide6.QtSql import QSqlDatabase, QSqlError, QSqlQuery
 
 from baseClasses import LEARNING_LEVEL
 
@@ -12,11 +16,19 @@ class Data:
     def __init__(self) -> None:
         pass
 
-class Database:
+class Database(AbstractContextManager):
     def __init__(self, dbName: str) -> None:
         self.db = dbName
         self.con = QSqlDatabase.addDatabase("QSQLITE")
         self.con.setDatabaseName(self.db)
+
+    def __enter__(self) -> Self:
+        self.open()
+        return super().__enter__()
+    
+    def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
+        self.close()
+        return super().__exit__(exc_type, exc_value, traceback)
 
     def _execQuery(self, /, query: str, **kwargs: str) -> tuple[bool, QSqlQuery]:
         """Executes query with given keyword arguments"""
@@ -78,11 +90,29 @@ class Database:
     
     def close(self) -> None:
         """Close database connection"""
-        self.con.close()
+        if self.con.isOpen():
+            self.con.close()
 
     def open(self) -> bool:
-        """Open database connection"""
-        return self.con.open()
+        """Opens database connection. Returns True if successful, False otherwise"""
+        if not Path(self.db).is_file():
+            raise FileNotFoundError(errno.ENOENT, "Unable to find given file", self.db)
+        result = self.con.open()
+        if not result:
+            match self.con.lastError().type():
+                case QSqlError.ErrorType.NoError:
+                    pass
+                case QSqlError.ErrorType.ConnectionError:
+                    raise ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused for file", self.db)
+                case QSqlError.ErrorType.StatementError: # Should be impossible
+                    raise RuntimeError("Unable to open database due to a statement error")
+                case QSqlError.ErrorType.TransactionError: # Should be impossible
+                    raise RuntimeError("Unable to open database due to a transaction error")
+                case QSqlError.ErrorType.UnknownError:
+                    raise RuntimeError("Unable to open database for unknown reason")
+                case _:
+                    pass
+        return result
     
     def deletePhrase(self, id: int) -> bool:
         """Deletes given phrase via ID"""

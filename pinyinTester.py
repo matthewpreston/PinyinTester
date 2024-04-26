@@ -7,10 +7,12 @@
 
 import configparser
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 import datetime
 from enum import Enum
 import random
 import sys
+from typing import Self
 
 from bs4 import BeautifulSoup
 import darkdetect
@@ -303,7 +305,7 @@ class View(QMainWindow):
             self.labelDetails.setStyleSheet(f"color: {View.COLOR.WHITE.value}")
 
 
-class Model():
+class Model(AbstractContextManager):
     """The brains"""
 
     DIACRITIC_TO_TONE = {
@@ -333,17 +335,24 @@ class Model():
         'À':'A','È':'E','Ì':'I','Ò':'O','Ù':'U','Ǜ':'V'
     }
 
-    def __init__(self, vocabularyFiles: list[str], databaseFile: str, /, newUnseenCardChance: float=0.3) -> None:
-        self.vocabularies = self._getChineseVocabularies(vocabularyFiles)
-        self.maximums = self._getMaximums()
+    def __init__(self, databaseFile: str, vocabularyFiles: list[str], /, newUnseenCardChance: float=0.3) -> None:
         self.chineseDB = ChineseDB(databaseFile)
         self.chineseDB.open()
+        self.vocabularies = self._getChineseVocabularies(vocabularyFiles)
+        self.maximums = self._getMaximums()
         self.currentPhrase: ChineseDataWithStats = None
         self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
         self.start: datetime.datetime = None
         if newUnseenCardChance >= 1:
             raise ValueError
         self.newUnseenCardChance = newUnseenCardChance
+
+    def __enter__(self) -> Self:
+        return super().__enter__()
+    
+    def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
+        self.close()
+        return super().__exit__(exc_type, exc_value, traceback)
 
     def _assessQuality(self, answerState: ANSWER_STATE) -> QUALITY:
         """Updates quality member based on timing and correctness of response"""
@@ -600,7 +609,7 @@ class Model():
         self.start = datetime.datetime.now()
         return self.currentPhrase
 
-class Controller():
+class Controller(AbstractContextManager):
     """Links view to model"""
 
     def __init__(self, model: Model, view: View, learningLevels: LEARNING_LEVEL, /, iniFile: str=None) -> None:
@@ -618,6 +627,13 @@ class Controller():
         self._initializeSetupView()
         self._connectSignalAndSlots()
         self.view.loadSetupView()
+
+    def __enter__(self) -> Self:
+        return super().__enter__()
+    
+    def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
+        self.close()
+        return super().__exit__(exc_type, exc_value, traceback)
 
     def _connectSignalAndSlots(self) -> None:
         """Hooks up model to view"""
@@ -753,7 +769,6 @@ class Controller():
     def close(self) -> None:
         """Cleans up and writes to .ini"""
         self._write_ini()
-        self.model.close()
 
     def deleteEntry(self) -> None:
         """Deletes currently shown entry"""
@@ -886,16 +901,18 @@ class Controller():
             )
         return dummy
 
-def main(argv: list[str]) -> None:
+def main(argv: list[str], argc: int) -> None:
+    databaseFile = argv[1]
+    vocabularyFiles = argv[2:]
+
     app = QApplication([])
     app.setStyleSheet("") # TODO
     view = View(WINDOW_WIDTH, WINDOW_HEIGHT)
-    model = Model(argv[2:], argv[1])
-    controller = Controller(model, view, HSK_LEVEL, iniFile="settings.ini")
-    view.show()
-    result = app.exec()
-    controller.close()
+    with Model(databaseFile, vocabularyFiles) as model:
+        with Controller(model, view, HSK_LEVEL, iniFile="settings.ini"):
+            view.show()
+            result = app.exec()
     sys.exit(result)
 
 if __name__ == "__main__":
-    main(sys.argv)
+    main(sys.argv, len(sys.argv))
