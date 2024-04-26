@@ -10,6 +10,8 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 import datetime
 from enum import Enum
+import errno
+from pathlib import Path
 import random
 import sys
 from typing import Self
@@ -39,6 +41,13 @@ from chineseDatabase import ChineseDB, ChineseDataWithStats
 
 WINDOW_WIDTH = 600
 WINDOW_HEIGHT = 600
+
+def createErrorMessage(parent: QWidget, message: str, title: str="Error") -> None:
+    """Creates an error message box window"""
+    messageBox = QMessageBox(parent)
+    messageBox.setWindowTitle(title)
+    messageBox.setText(message)
+    messageBox.exec()
 
 class View(QMainWindow):
     """The GUI"""
@@ -304,7 +313,6 @@ class View(QMainWindow):
             self.labelPinyin.setStyleSheet(f"color: {View.COLOR.WHITE.value}")
             self.labelDetails.setStyleSheet(f"color: {View.COLOR.WHITE.value}")
 
-
 class Model(AbstractContextManager):
     """The brains"""
 
@@ -337,17 +345,17 @@ class Model(AbstractContextManager):
 
     def __init__(self, databaseFile: str, vocabularyFiles: list[str], /, newUnseenCardChance: float=0.3) -> None:
         self.chineseDB = ChineseDB(databaseFile)
-        self.chineseDB.open()
         self.vocabularies = self._getChineseVocabularies(vocabularyFiles)
         self.maximums = self._getMaximums()
         self.currentPhrase: ChineseDataWithStats = None
         self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
         self.start: datetime.datetime = None
         if newUnseenCardChance >= 1:
-            raise ValueError
+            raise ValueError(f"New unseen card chance must be between 0 and 1 (0 <= chance <= 1). Given: {newUnseenCardChance}")
         self.newUnseenCardChance = newUnseenCardChance
 
     def __enter__(self) -> Self:
+        self.open()
         return super().__enter__()
     
     def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
@@ -411,12 +419,13 @@ class Model(AbstractContextManager):
         """Reads a list of files and harvests the first column"""
         results = {}
         for f, level in zip(chineseVocabularyFiles, HSK_LEVEL):
+            if not Path(f).is_file():
+                raise FileNotFoundError(errno.ENOENT, "Unable to find given file", f)
             result = []
-            handle = open(f, encoding="utf8")
-            for l in handle.readlines():
-                # Get first column string, remove trailing '\n'
-                result.append(l.split('\t', 1)[0][:-1])
-            handle.close()
+            with open(f, encoding="utf8") as handle:
+                for l in handle.readlines():
+                    # Get first column string, remove trailing '\n'
+                    result.append(l.split('\t', 1)[0][:-1])
             results[level] = result
         return results
     
@@ -572,7 +581,9 @@ class Model(AbstractContextManager):
         return (ANSWER_STATE.WRONG, quality)
 
     def close(self) -> None:
-        self.chineseDB.close()
+        """Closes database connection"""
+        if self.chineseDB.isOpen():
+            self.chineseDB.close()
 
     def deleteEntry(self) -> None:
         """Removes entry from testing pool"""
@@ -609,10 +620,15 @@ class Model(AbstractContextManager):
         self.start = datetime.datetime.now()
         return self.currentPhrase
 
+    def open(self) -> bool:
+        """Opens database connection"""
+        if not self.chineseDB.isOpen():
+            self.chineseDB.open()
+
 class Controller(AbstractContextManager):
     """Links view to model"""
 
-    def __init__(self, model: Model, view: View, learningLevels: LEARNING_LEVEL, /, iniFile: str=None) -> None:
+    def __init__(self, model: Model, view: View, learningLevels: list[LEARNING_LEVEL], /, iniFile: str=None) -> None:
         self._did_iniReadFail = False
         self.model = model
         self.view  = view
@@ -632,7 +648,7 @@ class Controller(AbstractContextManager):
         return super().__enter__()
     
     def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
-        self.close()
+        self.finish()
         return super().__exit__(exc_type, exc_value, traceback)
 
     def _connectSignalAndSlots(self) -> None:
@@ -687,16 +703,20 @@ class Controller(AbstractContextManager):
         if self.iniFile is None:
             self._initializeDefaultLearningLevels()
             return
+        if not Path(self.iniFile).is_file():
+            self._did_iniReadFail = True
+            createErrorMessage(self.view, "Error", f"Unable to find {self.iniFile}. Please check file name. Setting to default settings.")
+            self._initializeDefaultLearningLevels()
+            return
+        # Attempt to read
         config = configparser.ConfigParser()
         result = config.read(self.iniFile)
         if len(result) == 0: # Failed to parse, set to defaults
             self._did_iniReadFail = True
-            messageBox = QMessageBox(self.view)
-            messageBox.setWindowTitle("Error")
-            messageBox.setText(f"Unable to read {self.iniFile}. Please check its configuration. Setting to default settings.")
-            messageBox.exec()
+            createErrorMessage(self.view, "Error", f"Unable to read {self.iniFile}. Please check its configuration. Setting to default settings.")
             self._initializeDefaultLearningLevels()
             return
+        # Parse data
         for l in self.learningLevels:
             match config["DEFAULT"].getboolean(f"{l.name}_IsActive"):
                 case True:
@@ -705,10 +725,7 @@ class Controller(AbstractContextManager):
                     pass
                 case _: # Was likely a None, thus call failed
                     self._did_iniReadFail = True
-                    messageBox = QMessageBox(self.view)
-                    messageBox.setWindowTitle("Error")
-                    messageBox.setText(f"Unable to parse {self.iniFile} for section {l.name}_IsActive. Please check its configuration. Setting to default settings.")
-                    messageBox.exec()
+                    createErrorMessage(self.view, "Error", f"Unable to parse {self.iniFile} for section {l.name}_IsActive. Please check its configuration. Setting to default settings.")
                     self._initializeDefaultLearningLevels()
                     return
             match r := config["DEFAULT"].getint(f"{l.name}_EndRange"):
@@ -716,10 +733,7 @@ class Controller(AbstractContextManager):
                     self.activeLearningLevelEndRange[l] = r
                 case _: # Was likely a None, thus call failed
                     self._did_iniReadFail = True
-                    messageBox = QMessageBox(self.view)
-                    messageBox.setWindowTitle("Error")
-                    messageBox.setText(f"Unable to parse {self.iniFile} for section {l.name}_EndRange. Please check its configuration. Setting to default settings.")
-                    messageBox.exec()
+                    createErrorMessage(self.view, "Error", f"Unable to parse {self.iniFile} for section {l.name}_EndRange. Please check its configuration. Setting to default settings.")
                     self._initializeDefaultLearningLevels()
                     return
 
@@ -766,10 +780,6 @@ class Controller(AbstractContextManager):
             case _:
                 pass
 
-    def close(self) -> None:
-        """Cleans up and writes to .ini"""
-        self._write_ini()
-
     def deleteEntry(self) -> None:
         """Deletes currently shown entry"""
         messageBox = QMessageBox(self.view)
@@ -793,6 +803,10 @@ class Controller(AbstractContextManager):
     def editEntry(self) -> None:
         """Edits current entry"""
         raise NotImplementedError
+
+    def finish(self) -> None:
+        """Cleans up and writes to .ini"""
+        self._write_ini()
 
     def flashQuality(self, /, delay: int=1000) -> None:
         """Shows quality on screen briefly"""
@@ -909,10 +923,9 @@ def main(argv: list[str], argc: int) -> None:
     app.setStyleSheet("") # TODO
     view = View(WINDOW_WIDTH, WINDOW_HEIGHT)
     with Model(databaseFile, vocabularyFiles) as model:
-        with Controller(model, view, HSK_LEVEL, iniFile="settings.ini"):
+        with Controller(model, view, [l for l in HSK_LEVEL], iniFile="settings.ini"):
             view.show()
-            result = app.exec()
-    sys.exit(result)
+            sys.exit(app.exec())
 
 if __name__ == "__main__":
     main(sys.argv, len(sys.argv))

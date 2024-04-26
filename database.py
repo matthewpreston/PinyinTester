@@ -17,6 +17,8 @@ class Data:
         pass
 
 class Database(AbstractContextManager):
+    """Base class for all language databases"""
+
     def __init__(self, dbName: str) -> None:
         self.db = dbName
         self.con = QSqlDatabase.addDatabase("QSQLITE")
@@ -95,6 +97,8 @@ class Database(AbstractContextManager):
 
     def open(self) -> bool:
         """Opens database connection. Returns True if successful, False otherwise"""
+        if self.con.isOpen(): # Already open
+            return
         if not Path(self.db).is_file():
             raise FileNotFoundError(errno.ENOENT, "Unable to find given file", self.db)
         result = self.con.open()
@@ -149,7 +153,11 @@ class Database(AbstractContextManager):
     def insertResponseTime(self, id: int, timeStamp: datetime.datetime, responseTime: float) -> bool:
         """Logs how long one took to answer a flashcard"""
         raise NotImplementedError
-    
+
+    def isOpen(self) -> bool:
+        """Returns True if connection is open"""
+        return self.con.isOpen()
+
     def updatePhrase(
             self, 
             id: int, 

@@ -9,9 +9,9 @@ class LEARNING_LEVEL(Enum):
     pass
 
 class ANSWER_STATE(Enum):
-        CORRECT=0
-        WRONG=1
-        HOMONYM=2
+    CORRECT=0
+    WRONG=1
+    HOMONYM=2
 
 class QUALITY(Enum):
     """Qualities used for SuperMemo 2 (SM-2) algorithm"""

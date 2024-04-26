@@ -509,26 +509,24 @@ def main(args: list[str]) -> None:
     dataFiles = args[3::2]
 
     app = QApplication([])
-    db = ChineseDB(dbFile)
-    db.open()
-    if not db.initializeDB(): # Failed to initialize
-        raise
-    for vocabFile, dataFile, level in zip(vocabFiles, dataFiles, HSK_LEVEL):
-        vocabHandle = open(vocabFile, encoding="utf8")
-        dataHandle = open(dataFile, encoding="utf8")
-        dataHandle.readline() # Skip header
-        data = ChineseData.fromDelimitedString(dataHandle.readline(), '\t')
-        for ordinalID, vocab in enumerate(vocabHandle.readlines()):
-            vocab = vocab.rstrip()
-            while vocab == data.simplified:
-                if not db.insertPhrase(level, ordinalID, data): # Failed to insert
-                    raise
-                if (l := dataHandle.readline()) == "": # EOF
-                    break
-                data = ChineseData.fromDelimitedString(l, '\t')
-        vocabHandle.close()
-        dataHandle.close()
-    db.close()
+    with ChineseDB(dbFile) as db:
+        if not db.initializeDB(): # Failed to initialize
+            raise
+        for vocabFile, dataFile, level in zip(vocabFiles, dataFiles, HSK_LEVEL):
+            vocabHandle = open(vocabFile, encoding="utf8")
+            dataHandle = open(dataFile, encoding="utf8")
+            dataHandle.readline() # Skip header
+            data = ChineseData.fromDelimitedString(dataHandle.readline(), '\t')
+            for ordinalID, vocab in enumerate(vocabHandle.readlines()):
+                vocab = vocab.rstrip()
+                while vocab == data.simplified:
+                    if not db.insertPhrase(level, ordinalID, data): # Failed to insert
+                        raise
+                    if (l := dataHandle.readline()) == "": # EOF
+                        break
+                    data = ChineseData.fromDelimitedString(l, '\t')
+            vocabHandle.close()
+            dataHandle.close()
     sys.exit(0)
 
 if __name__ == "__main__":
