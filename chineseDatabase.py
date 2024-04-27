@@ -143,7 +143,7 @@ class ChineseDB(Database):
 
     def getPhrases(self, level: HSK_LEVEL, maxOrdinalID: int, limit: int=None) -> list[ChineseDataWithStats]:
         """Gets a list of phrase data given a particular level and an upper bound in that level"""
-        if limit is not None and limit < 0:
+        if limit is not None and not isinstance(limit, int) and limit < 0:
             raise ValueError
         return self._execQueryGetResults(
             query=f"""
@@ -168,7 +168,7 @@ class ChineseDB(Database):
                 band = :_band AND
                 ordinalID <= :_maxOrdinalID AND
                 deleted = 0
-            {f"LIMIT {limit}" if limit is not None else ""}
+            {"LIMIT :_limit" if limit is not None else ""}
             ;
             """,
             constructor=lambda r: ChineseDataWithStats(
@@ -188,12 +188,13 @@ class ChineseDB(Database):
                 r.value(13) # easeFactor
             ),
             _band=ChineseDB.bands[level],
-            _maxOrdinalID=maxOrdinalID
+            _maxOrdinalID=maxOrdinalID,
+            _limit=limit
         )
 
     def getPhrasesDueToday(self, level: HSK_LEVEL, maxOrdinalID: int, limit: int=None) -> list[Data]:
         """Gets a list of phrases that are due today (i.e. date <= now())"""
-        if limit is not None and limit < 0:
+        if limit is not None and not isinstance(limit, int) and limit < 0:
             raise ValueError
         return self._execQueryGetResults(
             query=f"""
@@ -221,7 +222,7 @@ class ChineseDB(Database):
                 deleted = 0
             ORDER BY
                 dueDate DESC
-            {f"LIMIT {limit}" if limit is not None else ""}
+            {"LIMIT :_limit" if limit is not None else ""}
             ;
             """
             ,
@@ -242,7 +243,8 @@ class ChineseDB(Database):
                 r.value(13) # easeFactor
             ),
             _band=ChineseDB.bands[level],
-            _maxOrdinalID=maxOrdinalID
+            _maxOrdinalID=maxOrdinalID,
+            _limit=limit
         )
 
     def getPhrasesDueTodayCount(self, level: LEARNING_LEVEL, maxOrdinalID: int) -> int:
@@ -535,7 +537,7 @@ class ChineseDB(Database):
             SET
                 timesCorrect = timesCorrect + :_correct,
                 lastTimeSeen = :_lastTimeSeen,
-                {f"lastTimeCorrect = :_lastTimeCorrect," if lastTimeCorrect is not None else ""}
+                {"lastTimeCorrect = :_lastTimeCorrect," if lastTimeCorrect is not None else ""}
                 lastTimeCorrect = :_lastTimeCorrect,
                 dueDate = :_dueDate,
                 easeFactor = :_easeFactor
