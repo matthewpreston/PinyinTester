@@ -13,6 +13,7 @@ from PySide6.QtSql import QSqlDatabase, QSqlError, QSqlQuery
 from baseClasses import LEARNING_LEVEL
 
 class Data:
+    """Base class for data stored in database"""
     def __init__(self) -> None:
         pass
 
@@ -126,12 +127,16 @@ class Database(AbstractContextManager):
         """Returns the datum associated with the given ID if exists"""
         raise NotImplementedError
 
-    def getPhrases(self, level: LEARNING_LEVEL, maxOrdinalID: int) -> list[Data]:
+    def getPhrases(self, level: LEARNING_LEVEL, maxOrdinalID: int, limit: int=None) -> list[Data]:
         """Gets a list of phrase data given a particular level and an upper bound in that level"""
         raise NotImplementedError
 
     def getPhrasesDueToday(self, level: LEARNING_LEVEL, maxOrdinalID: int, limit: int=None) -> list[Data]:
         """Gets a list of phrases that are due today (i.e. date <= now())"""
+        raise NotImplementedError
+
+    def getPhrasesDueTodayCount(self, level: LEARNING_LEVEL, maxOrdinalID: int) -> int:
+        """Returns the number of phrases due today"""
         raise NotImplementedError
 
     def getResponseTimeAverage(self) -> float:

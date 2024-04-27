@@ -141,10 +141,12 @@ class ChineseDB(Database):
         )
         return result[0] if result else None
 
-    def getPhrases(self, level: HSK_LEVEL, maxOrdinalID: int) -> list[ChineseDataWithStats]:
+    def getPhrases(self, level: HSK_LEVEL, maxOrdinalID: int, limit: int=None) -> list[ChineseDataWithStats]:
         """Gets a list of phrase data given a particular level and an upper bound in that level"""
+        if limit is not None and limit < 0:
+            raise ValueError
         return self._execQueryGetResults(
-            query="""
+            query=f"""
             SELECT
                 id,
                 simplified,
@@ -165,7 +167,9 @@ class ChineseDB(Database):
             WHERE
                 band = :_band AND
                 ordinalID <= :_maxOrdinalID AND
-                deleted = 0;
+                deleted = 0
+            {f"LIMIT {limit}" if limit is not None else ""}
+            ;
             """,
             constructor=lambda r: ChineseDataWithStats(
                 r.value(0), # id
@@ -240,6 +244,24 @@ class ChineseDB(Database):
             _band=ChineseDB.bands[level],
             _maxOrdinalID=maxOrdinalID
         )
+
+    def getPhrasesDueTodayCount(self, level: LEARNING_LEVEL, maxOrdinalID: int) -> int:
+        """Returns the number of phrases due today"""
+        return int(self._execQueryGetResult(
+            query="""
+            SELECT
+                COUNT(1)
+            FROM
+                chinesePhrases
+            WHERE
+                band = :_band AND
+                ordinalID <= :_maxOrdinalID AND
+                dueDate <= date("now") AND
+                deleted = 0
+            """,
+            _band=ChineseDB.bands[level],
+            _maxOrdinalID=maxOrdinalID
+        ))
 
     def getPhrasesWithSameLogographs(self, simplified: str, originalID: int) -> list[ChineseDataWithStats]:
         """

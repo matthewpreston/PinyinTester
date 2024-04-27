@@ -3,4 +3,5 @@
     - maybe even have it be a large list so you can keep going back in time like how Anki does
 - number of dots to display which shows what level of QUALITY one got for answering kinda like how Anki does
 - deleted card graveyard revival
-- if .ini doesn't exit, allow user to make one
+- if .ini doesn't exist, allow user to make one
+- allow user to select their own quality after answering (in case they wanna move it up or down a slot)?

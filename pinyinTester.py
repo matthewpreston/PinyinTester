@@ -349,7 +349,7 @@ class Model(AbstractContextManager):
         self.maximums = self._getMaximums()
         self.currentPhrase: ChineseDataWithStats = None
         self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
-        self.wrongPhrases: dict[int, tuple[QUALITY, float]] = {}
+        self.incorrectPhrases: dict[int, tuple[QUALITY, float]] = {}
         self.start: datetime.datetime = None
         if newUnseenCardChance >= 1:
             raise ValueError(f"New unseen card chance must be between 0 and 1 (0 <= chance <= 1). Given: {newUnseenCardChance}")
@@ -377,7 +377,7 @@ class Model(AbstractContextManager):
                     std = self.chineseDB.getResponseTimeVariance() ** 0.5
                     if delta <= (avg - std):
                         return QUALITY.FIVE
-                    elif delta <= (avg + std):
+                    elif delta <= (avg + std / 2):
                         return QUALITY.FOUR
                     else:
                         return QUALITY.THREE
@@ -523,6 +523,16 @@ class Model(AbstractContextManager):
         return f"{result}{tone}"
 
     @staticmethod
+    def getAnswerFromData(data: ChineseDataWithStats) -> str:
+        """Returns an answer string for the flashcard from the class"""
+        return data.pinyin
+    
+    @staticmethod
+    def getDetailsFromData(data: ChineseDataWithStats) -> str:
+        """Returns a details string for the flashcard from the class"""
+        return data.english
+
+    @staticmethod
     def getPinyinBetweenTags(markup: str) -> str:
         """Gets pinyin content between markup language tags"""
         formattedAnswer = ""
@@ -537,16 +547,21 @@ class Model(AbstractContextManager):
             return f"{data.simplified}|{data.traditional}"
         else:
             return f"{data.simplified}"
-        
+
     @staticmethod
-    def getAnswerFromData(data: ChineseDataWithStats) -> str:
-        """Returns an answer string for the flashcard from the class"""
-        return data.pinyin
-    
-    @staticmethod
-    def getDetailsFromData(data: ChineseDataWithStats) -> str:
-        """Returns a details string for the flashcard from the class"""
-        return data.english
+    def getRandomLevel(levels: list[LEARNING_LEVEL], maximumBounds: dict[LEARNING_LEVEL, int]) -> LEARNING_LEVEL | None:
+        """Uniformly randomly retrieve a level index"""
+        if len(levels) == 0:
+            return None
+
+        r = random.randint(1, sum(v for v in maximumBounds.values()))
+        for l in levels:
+            mb = maximumBounds[l]
+            if r <= mb:
+                return l
+            else:
+                r = r - mb
+        return levels[-1] # Theoretically shouldn't be called but safety measure
 
     @staticmethod
     def updateEaseFactor(oldEaseFactor: float, quality: QUALITY) -> float:
@@ -607,8 +622,8 @@ class Model(AbstractContextManager):
         # Pinyin has HTML tags so extract the element within
         i = l(userInput.lower().replace(' ',''))
         if i == l(Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower()):
-            if self.currentPhrase.id in self.wrongPhrases: # See if user got it wrong during this session
-                oldQuality = self.wrongPhrases.pop(self.currentPhrase.id)
+            if self.currentPhrase.id in self.incorrectPhrases: # See if user got it wrong during this session
+                oldQuality = self.incorrectPhrases.pop(self.currentPhrase.id)
                 self._updateDatabase(ANSWER_STATE.WRONG, oldQuality)
                 quality = self._assessQuality(ANSWER_STATE.CORRECT)
                 return (ANSWER_STATE.CORRECT, quality)
@@ -618,8 +633,8 @@ class Model(AbstractContextManager):
         # Check against homonyms
         for p in self.phrasesWithSameLogographs:
             if i == l(Model.getPinyinBetweenTags(p.pinyin).lower()):
-                if self.currentPhrase.id in self.wrongPhrases: # See if user got it wrong during this session
-                    oldQuality = self.wrongPhrases.pop(self.currentPhrase.id)
+                if self.currentPhrase.id in self.incorrectPhrases: # See if user got it wrong during this session
+                    oldQuality = self.incorrectPhrases.pop(self.currentPhrase.id)
                     self._updateDatabase(ANSWER_STATE.WRONG, oldQuality)
                     quality = self._assessQuality(ANSWER_STATE.HOMONYM)
                     return (ANSWER_STATE.HOMONYM, quality)
@@ -628,9 +643,9 @@ class Model(AbstractContextManager):
         
         # Boowomp, put into a list to be called again until user gets it right
         quality = self._assessQuality(ANSWER_STATE.WRONG)
-        if self.currentPhrase.id not in self.wrongPhrases:
+        if self.currentPhrase.id not in self.incorrectPhrases:
             # First time wrong, add to list
-            self.wrongPhrases[self.currentPhrase.id] = (quality, self.calculateResponseTime())
+            self.incorrectPhrases[self.currentPhrase.id] = (quality, self.calculateResponseTime())
         return (ANSWER_STATE.WRONG, quality)
 
     def close(self) -> None:
@@ -648,7 +663,7 @@ class Model(AbstractContextManager):
         weren't able to correct themselves. This should be called before
         closing the database for the session
         """
-        for id, (quality, responseTime) in self.wrongPhrases.items():
+        for id, (quality, responseTime) in self.incorrectPhrases.items():
             self._updateDatabaseDuringFlush(id, quality, responseTime)
 
     def getFirstPhraseInLevel(self, level: LEARNING_LEVEL) -> tuple[str, int]:
@@ -663,23 +678,63 @@ class Model(AbstractContextManager):
         """Returns specified phrase"""
         return self.vocabularies[level][index]
 
-    def getRandomPhraseInLevel(self, level: LEARNING_LEVEL, maximumBound: int, limit: int=None) -> ChineseDataWithStats:
-        """Returns a random phrase in (chinese, pinyin, details)"""
-        phrases = []
-        # Test a chance just to choose a new unseen card instead of chugging through old cards
-        if random.random() < self.newUnseenCardChance:
-            phrases = self.chineseDB.getPhrases(level, maximumBound)
-            if len(phrases) != 0:
-                self._intializePhraseVariables(random.choice(phrases))
-                return self.currentPhrase
-        # Either failed random chance or there are no other phrases; get one from the due date list or the wrong list
-        phrasesDueToday = self.chineseDB.getPhrasesDueToday(level, maximumBound, limit)
-        if random.randint(1, len(phrasesDueToday) + len(self.wrongPhrases)) < len(phrasesDueToday):
-            # Choose from phrases due today
-            self._intializePhraseVariables(random.choice(phrasesDueToday))
-            return self.currentPhrase
-        # Choose from the list of wrong answers
-        self._intializePhraseVariables(self.chineseDB.getPhraseById(random.choice(self.wrongPhrases.keys())))
+    def getRandomIncorrectPhrase(self) -> ChineseDataWithStats | None:
+        """Returns a random phrase in (chinese, pinyin, details) that user got wrong during this session"""
+        if len(self.incorrectPhrases) == 0:
+            return None
+        self._intializePhraseVariables(self.chineseDB.getPhraseById(random.choice([k for k in self.incorrectPhrases.keys()])))
+        return self.currentPhrase
+
+    def getRandomPhrase(self, learningLevels: list[LEARNING_LEVEL], maximumBounds: dict[LEARNING_LEVEL, int], limit: int=None) -> ChineseDataWithStats | None:
+        """
+        Returns a random phrase in (chinese, pinyin, details) from specified
+        learning levels and bounds, None if there are no phrases
+        """
+
+        # See first if we have any incorrect phrases or phrases due today to work with
+        numI = len(self.incorrectPhrases)
+        numPDT = 0
+        numPDTs = {}
+        for level in learningLevels:
+            temp = self.chineseDB.getPhrasesDueTodayCount(level, maximumBounds.get(level, 0))
+            numPDT += temp
+            numPDTs[level] = self.chineseDB.getPhrasesDueTodayCount(level, maximumBounds.get(level, 0))
+        if numPDT + numI == 0:
+            # Forced to try and pick a random phrase from the database
+            # Note: this may return None if there really are no other choices
+            level = Model.getRandomLevel(learningLevels, maximumBounds)
+            return self.getRandomPhraseInLevel(level, maximumBounds.get(level, 0), limit)
+
+        # We have some phrases in the incorrect/due today bank
+        # Test a chance just to choose a new unseen card instead or chug through old cards
+        if random.random() >= self.newUnseenCardChance:
+            # Failed chance, pick one incorrect phrases or from ones due today
+            if random.randint(1, numI + numPDT) <= numI:
+                # Choose from incorrect phrases
+                return self.getRandomIncorrectPhrase()
+            # Instead choose from phrases due today
+            level = Model.getRandomLevel(learningLevels, numPDTs)
+            return self.getRandomPhraseDueTodayInLevel(level, maximumBounds.get(level, 0), limit)
+        
+        # Failed chance, choose a random phrase from the database
+        # Note: this may return None if there really are no other choices
+        level = Model.getRandomLevel(learningLevels, maximumBounds)
+        return self.getRandomPhraseInLevel(level, maximumBounds.get(level, 0), limit)
+
+    def getRandomPhraseInLevel(self, level: LEARNING_LEVEL, maximumBound: int, limit: int=None) -> ChineseDataWithStats | None:
+        """Returns a random phrase in (chinese, pinyin, details) from specified learning level and maximum bound"""
+        phrases = self.chineseDB.getPhrases(level, maximumBound, limit)
+        if len(phrases) == 0: # No phrases
+            return None
+        self._intializePhraseVariables(random.choice(phrases))
+        return self.currentPhrase
+
+    def getRandomPhraseDueTodayInLevel(self, level: LEARNING_LEVEL, maximumBound: int, limit: int=None) -> ChineseDataWithStats | None:
+        """Returns a random phrase in (chinese, pinyin, details) that's due today from specified learning levels and bounds"""
+        phrases = self.chineseDB.getPhrasesDueToday(level, maximumBound, limit)
+        if len(phrases) == 0: # No phrases
+            return None
+        self._intializePhraseVariables(random.choice(phrases))
         return self.currentPhrase
 
     def open(self) -> bool:
@@ -706,7 +761,7 @@ class Controller(AbstractContextManager):
         self.ignoreTones = ignoreTones
         self.iniFile = iniFile
         self.activeLearningLevels: list[LEARNING_LEVEL] = []
-        self.activeLearningLevelEndRange: dict[LEARNING_LEVEL, int] = {}
+        self.activeLearningLevelEndRanges: dict[LEARNING_LEVEL, int] = {}
         self.hasChecked = False
 
         # Set up initialization state
@@ -748,7 +803,7 @@ class Controller(AbstractContextManager):
         self.activeLearningLevels = [l for l in self.learningLevels]
         for l in self.learningLevels:
             lastPhrase, lastIndex = self.model.getLastPhraseInLevel(l)
-            self.activeLearningLevelEndRange[l] = lastIndex
+            self.activeLearningLevelEndRanges[l] = lastIndex
 
     def _initializeSetupView(self) -> None:
         """In the View's setup view, give the first and last phrases"""
@@ -761,12 +816,12 @@ class Controller(AbstractContextManager):
             self.view.setLabel(LABEL_SIDE.START, level, firstPhrase, firstIndex)
             lastPhrase, lastIndex = self.model.getLastPhraseInLevel(level)
             self.view.setSliderMaximum(level, lastIndex)
-            self.view.setSliderPosition(level, self.activeLearningLevelEndRange[level])
+            self.view.setSliderPosition(level, self.activeLearningLevelEndRanges[level])
             self.view.setLabel(
                 LABEL_SIDE.END,
                 level,
-                self.model.getPhraseInLevel(level, self.activeLearningLevelEndRange[level]-1),
-                self.activeLearningLevelEndRange[level]
+                self.model.getPhraseInLevel(level, self.activeLearningLevelEndRanges[level]-1),
+                self.activeLearningLevelEndRanges[level]
             )
 
     def _read_ini(self) -> None:
@@ -801,7 +856,7 @@ class Controller(AbstractContextManager):
                     return
             match r := config["DEFAULT"].getint(f"{l.name}_EndRange"):
                 case int():
-                    self.activeLearningLevelEndRange[l] = r
+                    self.activeLearningLevelEndRanges[l] = r
                 case _: # Was likely a None, thus call failed
                     self._did_iniReadFail = True
                     createErrorMessage(self.view, "Error", f"Unable to parse {self.iniFile} for section {l.name}_EndRange. Please check its configuration. Setting to default settings.")
@@ -886,22 +941,9 @@ class Controller(AbstractContextManager):
 
     def loadNextQuestion(self) -> None:
         """Fetches next question and loads it to view"""
-        # Get a random level uniformly
-        r = random.randint(1, sum([self.view.getSliderValue(l) for l in self.activeLearningLevels]))
-        for l in self.activeLearningLevels:
-            v = self.view.getSliderValue(l)
-            if r <= v:
-                level = l
-                break
-            else:
-                r = r - v
-        try:
-            data = self.model.getRandomPhraseInLevel(level, self.view.getSliderValue(level)-1)
-        except IndexError: # No phrases to choose from
-            messageBox = QMessageBox(self.view)
-            messageBox.setWindowTitle("Error")
-            messageBox.setText("No phrases were found in the levels and selections provided. Please expand the scope or add to the database.")
-            messageBox.exec()
+        data = self.model.getRandomPhrase(self.activeLearningLevels, self.activeLearningLevelEndRanges)
+        if data is None:
+            createErrorMessage(self.view, "No phrases were found in the levels and selections provided. Please expand the scope or add to the database.")
             self.returnToSetupView()
             return
         prompt = Model.getPromptFromData(data)
