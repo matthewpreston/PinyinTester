@@ -121,7 +121,11 @@ class Database(AbstractContextManager):
     def deletePhrase(self, id: int) -> bool:
         """Deletes given phrase via ID"""
         raise NotImplementedError
-    
+
+    def getPhraseById(self, id: int) -> Data | None:
+        """Returns the datum associated with the given ID if exists"""
+        raise NotImplementedError
+
     def getPhrases(self, level: LEARNING_LEVEL, maxOrdinalID: int) -> list[Data]:
         """Gets a list of phrase data given a particular level and an upper bound in that level"""
         raise NotImplementedError
@@ -161,10 +165,10 @@ class Database(AbstractContextManager):
     def updatePhrase(
             self, 
             id: int, 
-            wasCorrect: bool, 
-            lastTimeCorrect: datetime.datetime, 
+            wasCorrect: bool,  
             dueDate: datetime.datetime, 
-            easeFactor: float
+            easeFactor: float,
+            lastTimeCorrect: datetime.datetime=None
         ) -> bool:
         """Updates entry with the user's results (were they correct in answering or not)"""
         raise NotImplementedError

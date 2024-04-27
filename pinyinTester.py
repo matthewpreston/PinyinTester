@@ -349,6 +349,7 @@ class Model(AbstractContextManager):
         self.maximums = self._getMaximums()
         self.currentPhrase: ChineseDataWithStats = None
         self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
+        self.wrongPhrases: dict[int, tuple[QUALITY, float]] = {}
         self.start: datetime.datetime = None
         if newUnseenCardChance >= 1:
             raise ValueError(f"New unseen card chance must be between 0 and 1 (0 <= chance <= 1). Given: {newUnseenCardChance}")
@@ -359,6 +360,7 @@ class Model(AbstractContextManager):
         return super().__enter__()
     
     def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
+        self.flush()
         self.close()
         return super().__exit__(exc_type, exc_value, traceback)
 
@@ -433,17 +435,23 @@ class Model(AbstractContextManager):
         """Returns a dict showing how much vocab in is each level"""
         return {level: len(self.vocabularies[level]) for level in HSK_LEVEL}
 
-    def _getPhrasesWithSameLogographs(self, logograph: str, originalID: int) -> list[ChineseDataWithStats]:
-        """Returns list of phrases with the same logograph but not with the same original ID"""
-        return self.chineseDB.getPhrasesWithSameLogographs(logograph, originalID)
+    def _intializePhraseVariables(self, phrase: ChineseDataWithStats) -> None:
+        """Sets up member variables given new phrase"""
+        self.currentPhrase = phrase
+        self.phrasesWithSameLogographs = self.chineseDB.getPhrasesWithSameLogographs(
+            self.currentPhrase.simplified,
+            self.currentPhrase.id)
+        self.start = datetime.datetime.now()
 
-    def _updateDatabase(self, answerState: ANSWER_STATE, wasCorrect: bool) -> QUALITY:
+    def _updateDatabase(self, answerState: ANSWER_STATE, storedQuality: QUALITY=None) -> QUALITY:
         """Updates Chinese phrase data and inserts the response time"""
-        quality = self._assessQuality(answerState)
+        if storedQuality is None:
+            quality = self._assessQuality(answerState)
+        else:
+            quality = storedQuality
         self.chineseDB.updatePhrase(
             self.currentPhrase.id,
-            wasCorrect=wasCorrect,
-            lastTimeCorrect=datetime.datetime.now(),
+            wasCorrect=(ANSWER_STATE == ANSWER_STATE.CORRECT),
             dueDate=Model.updateDueDate(
                 self.currentPhrase.lastTimeSeen,
                 self.currentPhrase.dueDate,
@@ -453,16 +461,38 @@ class Model(AbstractContextManager):
             easeFactor=Model.updateEaseFactor(
                 self.currentPhrase.easeFactor,
                 quality
-            )
+            ),
+            lastTimeCorrect=datetime.datetime.now()
         )
-        temp = datetime.datetime.now() - self.start
-        delta = float(temp.seconds) + (temp.microseconds / 1000000)
         self.chineseDB.insertResponseTime(
             self.currentPhrase.id,
             timeStamp=datetime.datetime.now(),
-            responseTime=delta
+            responseTime=self.calculateResponseTime()
         )
         return quality
+    
+    def _updateDatabaseDuringFlush(self, id: int, quality: QUALITY, responseTime: float) -> None:
+        """Updates Chinese phrase data and inserts the response time. To be run only by flush()"""
+        phrase = self.chineseDB.getPhraseById(id)
+        self.chineseDB.updatePhrase(
+            id,
+            wasCorrect=False,
+            dueDate=Model.updateDueDate(
+                phrase.lastTimeSeen,
+                phrase.dueDate,
+                phrase.easeFactor,
+                quality
+            ),
+            easeFactor=Model.updateEaseFactor(
+                phrase.easeFactor,
+                quality
+            )
+        )
+        self.chineseDB.insertResponseTime(
+            id,
+            timeStamp=datetime.datetime.now(),
+            responseTime=responseTime
+        )
 
     @staticmethod
     def convertDiacriticToNumber(pinyin: str) -> str:
@@ -542,7 +572,7 @@ class Model(AbstractContextManager):
         """Provides the next due date in YYYY-MM-DD HH:MM:SS"""
         # Check if user failed
         if quality in [QUALITY.ZERO, QUALITY.ONE, QUALITY.TWO]:
-            return datetime.datetime.now() + datetime.timedelta(days=1)
+            return datetime.datetime.now()
         # Check if it's the first time this card has ever been seen
         if lastTimeSeen == "0" or oldDueDate == "0":
             return datetime.datetime.now() + datetime.timedelta(days=1)
@@ -556,8 +586,18 @@ class Model(AbstractContextManager):
         else:
             return datetime.datetime.now() + datetime.timedelta(days=int(interval*newEase))
 
+    def calculateResponseTime(self) -> float:
+        """Calculates how long it took the user to respond"""
+        temp = datetime.datetime.now() - self.start
+        return float(temp.seconds) + (temp.microseconds / 1000000)
+
     def checkAnswer(self, userInput: str, ignoreTones: bool=False) -> tuple[ANSWER_STATE, QUALITY]:
-        """Return true if correct pinyin for given chinese phrase"""
+        """
+        Return true if correct pinyin for given chinese phrase. Updates the
+        database if answer was correct or a homonym. For answers that are
+        wrong, they are put into an internal list of wrong answers and can
+        be randomly chosen when calling getRandomPhraseInLevel(). To write them
+        to the database, call flush()"""
         # Create a dummy function to handle tone marks
         if ignoreTones:
             l = lambda s: "".join([c for c in s if not c.isdigit()])
@@ -567,17 +607,30 @@ class Model(AbstractContextManager):
         # Pinyin has HTML tags so extract the element within
         i = l(userInput.lower().replace(' ',''))
         if i == l(Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower()):
-            quality = self._updateDatabase(ANSWER_STATE.CORRECT, True)
+            if self.currentPhrase.id in self.wrongPhrases: # See if user got it wrong during this session
+                oldQuality = self.wrongPhrases.pop(self.currentPhrase.id)
+                self._updateDatabase(ANSWER_STATE.WRONG, oldQuality)
+                quality = self._assessQuality(ANSWER_STATE.CORRECT)
+                return (ANSWER_STATE.CORRECT, quality)
+            quality = self._updateDatabase(ANSWER_STATE.CORRECT)
             return (ANSWER_STATE.CORRECT, quality)
         
         # Check against homonyms
         for p in self.phrasesWithSameLogographs:
             if i == l(Model.getPinyinBetweenTags(p.pinyin).lower()):
-                quality = self._updateDatabase(ANSWER_STATE.HOMONYM, False)
+                if self.currentPhrase.id in self.wrongPhrases: # See if user got it wrong during this session
+                    oldQuality = self.wrongPhrases.pop(self.currentPhrase.id)
+                    self._updateDatabase(ANSWER_STATE.WRONG, oldQuality)
+                    quality = self._assessQuality(ANSWER_STATE.HOMONYM)
+                    return (ANSWER_STATE.HOMONYM, quality)
+                quality = self._updateDatabase(ANSWER_STATE.HOMONYM)
                 return (ANSWER_STATE.HOMONYM, quality)
         
-        # Boowomp
-        quality = self._updateDatabase(ANSWER_STATE.WRONG, False)
+        # Boowomp, put into a list to be called again until user gets it right
+        quality = self._assessQuality(ANSWER_STATE.WRONG)
+        if self.currentPhrase.id not in self.wrongPhrases:
+            # First time wrong, add to list
+            self.wrongPhrases[self.currentPhrase.id] = (quality, self.calculateResponseTime())
         return (ANSWER_STATE.WRONG, quality)
 
     def close(self) -> None:
@@ -588,6 +641,15 @@ class Model(AbstractContextManager):
     def deleteEntry(self) -> None:
         """Removes entry from testing pool"""
         self.chineseDB.deletePhrase(self.currentPhrase.id)
+
+    def flush(self) -> None:
+        """
+        Updates database with the phrases the user didn't get right today and
+        weren't able to correct themselves. This should be called before
+        closing the database for the session
+        """
+        for id, (quality, responseTime) in self.wrongPhrases.items():
+            self._updateDatabaseDuringFlush(id, quality, responseTime)
 
     def getFirstPhraseInLevel(self, level: LEARNING_LEVEL) -> tuple[str, int]:
         """Returns the first phrase in a level and its index"""
@@ -605,19 +667,19 @@ class Model(AbstractContextManager):
         """Returns a random phrase in (chinese, pinyin, details)"""
         phrases = []
         # Test a chance just to choose a new unseen card instead of chugging through old cards
-        if random.random() >= self.newUnseenCardChance:
-            phrases = self.chineseDB.getPhrasesDueToday(level, maximumBound, limit)
-        if len(phrases) == 0:
-            # None were due today/failed the chance, get some other phrases
+        if random.random() < self.newUnseenCardChance:
             phrases = self.chineseDB.getPhrases(level, maximumBound)
-            if len(phrases) == 0:
-                # Still no phrases to choose from
-                raise IndexError
-        self.currentPhrase = random.choice(phrases)
-        self.phrasesWithSameLogographs = self._getPhrasesWithSameLogographs(
-            self.currentPhrase.simplified,
-            self.currentPhrase.id)
-        self.start = datetime.datetime.now()
+            if len(phrases) != 0:
+                self._intializePhraseVariables(random.choice(phrases))
+                return self.currentPhrase
+        # Either failed random chance or there are no other phrases; get one from the due date list or the wrong list
+        phrasesDueToday = self.chineseDB.getPhrasesDueToday(level, maximumBound, limit)
+        if random.randint(1, len(phrasesDueToday) + len(self.wrongPhrases)) < len(phrasesDueToday):
+            # Choose from phrases due today
+            self._intializePhraseVariables(random.choice(phrasesDueToday))
+            return self.currentPhrase
+        # Choose from the list of wrong answers
+        self._intializePhraseVariables(self.chineseDB.getPhraseById(random.choice(self.wrongPhrases.keys())))
         return self.currentPhrase
 
     def open(self) -> bool:
@@ -628,11 +690,20 @@ class Model(AbstractContextManager):
 class Controller(AbstractContextManager):
     """Links view to model"""
 
-    def __init__(self, model: Model, view: View, learningLevels: list[LEARNING_LEVEL], /, iniFile: str=None) -> None:
+    def __init__(
+            self, 
+            model: Model, 
+            view: View, 
+            learningLevels: list[LEARNING_LEVEL], 
+            /, 
+            ignoreTones=False,
+            iniFile: str=None
+            ) -> None:
         self._did_iniReadFail = False
         self.model = model
         self.view  = view
         self.learningLevels = learningLevels
+        self.ignoreTones = ignoreTones
         self.iniFile = iniFile
         self.activeLearningLevels: list[LEARNING_LEVEL] = []
         self.activeLearningLevelEndRange: dict[LEARNING_LEVEL, int] = {}
@@ -768,7 +839,7 @@ class Controller(AbstractContextManager):
         if self.hasChecked: # User already checked or hit Next, no point checking
             return
         self.hasChecked = True
-        answer, quality = self.model.checkAnswer(self.view.getInput(), False)
+        answer, quality = self.model.checkAnswer(self.view.getInput(), self.ignoreTones)
         self.view.setQuality(quality)
         match answer:
             case ANSWER_STATE.CORRECT:
@@ -923,7 +994,7 @@ def main(argv: list[str], argc: int) -> None:
     app.setStyleSheet("") # TODO
     view = View(WINDOW_WIDTH, WINDOW_HEIGHT)
     with Model(databaseFile, vocabularyFiles) as model:
-        with Controller(model, view, [l for l in HSK_LEVEL], iniFile="settings.ini"):
+        with Controller(model, view, [l for l in HSK_LEVEL], ignoreTones=False, iniFile="settings.ini"):
             view.show()
             sys.exit(app.exec())
 

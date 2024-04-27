@@ -97,6 +97,50 @@ class ChineseDB(Database):
             _id=id
         )
 
+    def getPhraseById(self, id: int) -> ChineseDataWithStats | None:
+        """Returns the datum associated with the given ID if exists"""
+        result = self._execQueryGetResults(
+            query="""
+            SELECT
+                id,
+                simplified,
+                traditional,
+                pinyin,
+                english,
+                classifier,
+                taiwanPinyin,
+                wordsWithSamePinyin,
+                timesSeen,
+                timesCorrect,
+                lastTimeSeen,
+                lastTimeCorrect,
+                dueDate,
+                easeFactor
+            FROM
+                chinesePhrases
+            WHERE
+                id = :_id;
+            """,
+            constructor=lambda r: ChineseDataWithStats(
+                r.value(0), # id
+                r.value(1), # simplified
+                r.value(2), # traditional
+                r.value(3), # pinyin
+                r.value(4), # english
+                r.value(5), # classifier
+                r.value(6), # taiwanPinyin
+                r.value(7), # wordsWithSamePinyin
+                r.value(8), # timesSeen
+                r.value(9), # timesCorrect
+                r.value(10),# lastTimeSeen
+                r.value(11),# lastTimeCorrect
+                r.value(12),# dueDate
+                r.value(13) # easeFactor
+            ),
+            _id=id
+        )
+        return result[0] if result else None
+
     def getPhrases(self, level: HSK_LEVEL, maxOrdinalID: int) -> list[ChineseDataWithStats]:
         """Gets a list of phrase data given a particular level and an upper bound in that level"""
         return self._execQueryGetResults(
@@ -453,51 +497,35 @@ class ChineseDB(Database):
     def updatePhrase(
             self, 
             id: int, 
-            wasCorrect: bool, 
-            lastTimeCorrect: datetime.datetime, 
+            wasCorrect: bool,  
             dueDate: datetime.datetime, 
-            easeFactor: float
+            easeFactor: float,
+            lastTimeCorrect: datetime.datetime=None
         ) -> bool:
         """Updates entry with the user's results (were they correct in answering or not)"""
 
-        lastTimeCorrect = ChineseDB.formatTimeToStr(lastTimeCorrect)
+        if lastTimeCorrect is not None:
+            lastTimeCorrect = ChineseDB.formatTimeToStr(lastTimeCorrect)
         dueDate = ChineseDB.formatTimeToStr(dueDate)
-        if wasCorrect:
-            return self._execQueryNoResults(
-                query="""
-                UPDATE chinesePhrases
-                SET
-                    timesCorrect = timesCorrect + :_correct,
-                    lastTimeSeen = :_lastTimeSeen,
-                    lastTimeCorrect = :_lastTimeCorrect,
-                    dueDate = :_dueDate,
-                    easeFactor = :_easeFactor
-                WHERE id = :_id;
-                """,
-                _id=id,
-                _correct=int(wasCorrect),
-                _lastTimeSeen=lastTimeCorrect,
-                _lastTimeCorrect=lastTimeCorrect,
-                _dueDate=dueDate,
-                _easeFactor=easeFactor
-            )
-        else:
-            return self._execQueryNoResults(
-                query="""
-                UPDATE chinesePhrases
-                SET
-                    timesCorrect = timesCorrect + :_correct,
-                    lastTimeSeen = :_lastTimeSeen,
-                    dueDate = :_dueDate,
-                    easeFactor = :_easeFactor
-                WHERE id = :_id;
-                """,
-                _id=id,
-                _correct=int(wasCorrect),
-                _lastTimeSeen=lastTimeCorrect,
-                _dueDate=dueDate,
-                _easeFactor=easeFactor
-            )
+        return self._execQueryNoResults(
+            query=f"""
+            UPDATE chinesePhrases
+            SET
+                timesCorrect = timesCorrect + :_correct,
+                lastTimeSeen = :_lastTimeSeen,
+                {f"lastTimeCorrect = :_lastTimeCorrect," if lastTimeCorrect is not None else ""}
+                lastTimeCorrect = :_lastTimeCorrect,
+                dueDate = :_dueDate,
+                easeFactor = :_easeFactor
+            WHERE id = :_id;
+            """,
+            _id=id,
+            _correct=int(wasCorrect),
+            _lastTimeSeen=lastTimeCorrect,
+            _lastTimeCorrect=lastTimeCorrect,
+            _dueDate=dueDate,
+            _easeFactor=easeFactor
+        )
 
 def main(args: list[str]) -> None:
     if len(args) <= 3:
