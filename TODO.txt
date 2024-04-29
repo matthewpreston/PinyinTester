@@ -1,7 +1,5 @@
 - modify card feature during testing phase
-- go back to previous card that was tested
-    - maybe even have it be a large list so you can keep going back in time like how Anki does
-- number of dots to display which shows what level of QUALITY one got for answering kinda like how Anki does
+    - during editing, should pause the response timer
 - deleted card graveyard revival
 - if .ini doesn't exist, allow user to make one
 - allow user to select their own quality after answering (in case they wanna move it up or down a slot)?

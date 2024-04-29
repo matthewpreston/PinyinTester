@@ -6,8 +6,8 @@
 # 你好 -> ni3hao3
 
 import configparser
-from collections.abc import Callable
-from contextlib import AbstractContextManager
+from collections.abc import Callable, Generator
+from contextlib import AbstractContextManager, contextmanager, redirect_stdout
 import datetime
 from enum import Enum
 import errno
@@ -139,7 +139,7 @@ class View(QMainWindow):
         self.testingLayout.addWidget(self.labelQuality)
         self.labelChinese = QLabel()
         self.labelChinese.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.labelChinese.setFont(QFont("Arial", 60))
+        self.labelChinese.setFont(QFont("SimSun", 60))
         self.labelChinese.setWordWrap(True)
         self.testingLayout.addWidget(self.labelChinese)
         self.labelPinyin = QLabel()
@@ -179,17 +179,30 @@ class View(QMainWindow):
         """Returns what the answer should be"""
         return self.labelPinyin.text()
 
-    def getCheckBoxState(self, level: LEARNING_LEVEL) -> bool:
+    def getCheckBoxState(self, level: LEARNING_LEVEL) -> bool | None:
         """Returns whether a given box is checked or not"""
-        return self.checkboxes[level].isChecked()
+        try:
+            return self.checkboxes[level].isChecked()
+        except:
+            return None
 
     def getInput(self) -> str:
         """Returns what the user has typed"""
         return self.lineEditPinyin.text()
-    
-    def getSliderValue(self, level: LEARNING_LEVEL) -> int:
+
+    def getSliderMaximum(self, level: LEARNING_LEVEL) -> int | None:
+        """Returns the maximum value of the specified slider"""
+        try:
+            return self.sliders[level].maximum()
+        except:
+            return None
+
+    def getSliderPosition(self, level: LEARNING_LEVEL) -> int | None:
         """Returns what value the specified slider is at"""
-        return self.sliders[level].value()
+        try:
+            return self.sliders[level].value()
+        except:
+            return None
 
     def loadNextQuestion(self, prompt: str, answer: str, details: str) -> None:
         """Fetches new question and sets up display"""
@@ -344,24 +357,34 @@ class Model(AbstractContextManager):
     }
 
     def __init__(self, databaseFile: str, vocabularyFiles: list[str], /, newUnseenCardChance: float=0.3) -> None:
+        """
+        databaseFile - the name of the database that stores all the language
+            data and response times of the user
+        vocabularyFiles - each file is an ordered list of unique phrases for
+            each language level. This helps inform the View what the end
+            scope of the user's highest language level is
+        newUnseenCardChace - percent chance of getting a brand new card to
+            stave off boredom
+        """
         self.chineseDB = ChineseDB(databaseFile)
         self.vocabularies = self._getChineseVocabularies(vocabularyFiles)
         self.maximums = self._getMaximums()
-        self.currentPhrase: ChineseDataWithStats = None
-        self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
-        self.incorrectPhrases: dict[int, tuple[QUALITY, float]] = {}
-        self.start: datetime.datetime = None
         if newUnseenCardChance >= 1:
             raise ValueError(f"New unseen card chance must be between 0 and 1 (0 <= chance <= 1). Given: {newUnseenCardChance}")
         self.newUnseenCardChance = newUnseenCardChance
+
+        self.currentPhrase: ChineseDataWithStats = None
+        self.phrasesWithSameLogographs: list[ChineseDataWithStats] = None
+        self.previouslyAnsweredPhrases: list[ChineseDataWithStats] = []
+        self.incorrectPhrasesData: dict[int, QUALITY] = {}
+        self.start: datetime.datetime = None
 
     def __enter__(self) -> Self:
         self.open()
         return super().__enter__()
     
     def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
-        self.flush()
-        self.close()
+        self.endSession()
         return super().__exit__(exc_type, exc_value, traceback)
 
     def _assessQuality(self, answerState: ANSWER_STATE) -> QUALITY:
@@ -443,15 +466,19 @@ class Model(AbstractContextManager):
             self.currentPhrase.id)
         self.start = datetime.datetime.now()
 
-    def _updateDatabase(self, answerState: ANSWER_STATE, storedQuality: QUALITY=None) -> QUALITY:
-        """Updates Chinese phrase data and inserts the response time"""
-        if storedQuality is None:
-            quality = self._assessQuality(answerState)
-        else:
-            quality = storedQuality
+    def _insertResponseTime(self, pauseTime: float=0) -> None:
+        """Inserts response time to database"""
+        self.chineseDB.insertResponseTime(
+            self.currentPhrase.id,
+            timeStamp=datetime.datetime.now(),
+            responseTime=self.calculateResponseTime(pauseTime)
+        )
+
+    def _updatePhrase(self, answerState: ANSWER_STATE, quality: QUALITY) -> None:
+        """Updates Chinese phrase data to database"""
         self.chineseDB.updatePhrase(
             self.currentPhrase.id,
-            wasCorrect=(ANSWER_STATE == ANSWER_STATE.CORRECT),
+            wasCorrect=(answerState == ANSWER_STATE.CORRECT),
             dueDate=Model.updateDueDate(
                 self.currentPhrase.lastTimeSeen,
                 self.currentPhrase.dueDate,
@@ -464,14 +491,8 @@ class Model(AbstractContextManager):
             ),
             lastTimeCorrect=datetime.datetime.now()
         )
-        self.chineseDB.insertResponseTime(
-            self.currentPhrase.id,
-            timeStamp=datetime.datetime.now(),
-            responseTime=self.calculateResponseTime()
-        )
-        return quality
     
-    def _updateDatabaseDuringFlush(self, id: int, quality: QUALITY, responseTime: float) -> None:
+    def _updateDatabaseDuringFlush(self, id: int, quality: QUALITY) -> None:
         """Updates Chinese phrase data and inserts the response time. To be run only by flush()"""
         phrase = self.chineseDB.getPhraseById(id)
         self.chineseDB.updatePhrase(
@@ -487,11 +508,6 @@ class Model(AbstractContextManager):
                 phrase.easeFactor,
                 quality
             )
-        )
-        self.chineseDB.insertResponseTime(
-            id,
-            timeStamp=datetime.datetime.now(),
-            responseTime=responseTime
         )
 
     @staticmethod
@@ -589,30 +605,35 @@ class Model(AbstractContextManager):
         if quality in [QUALITY.ZERO, QUALITY.ONE, QUALITY.TWO]:
             return datetime.datetime.now()
         # Check if it's the first time this card has ever been seen
-        if lastTimeSeen == "0" or oldDueDate == "0":
+        if lastTimeSeen == "0" or lastTimeSeen == "" or oldDueDate == "0" or oldDueDate == "":
             return datetime.datetime.now() + datetime.timedelta(days=1)
         newEase = Model.updateEaseFactor(oldEaseFactor, quality)
         lts = ChineseDB.formatTimeToDateTime(lastTimeSeen)
         odd = ChineseDB.formatTimeToDateTime(oldDueDate)
         delta = odd - lts
         interval = delta.days + round(delta.seconds / 86400)
-        if interval == 1:
+        if interval <= 1:
             return datetime.datetime.now() + datetime.timedelta(days=6)
         else:
             return datetime.datetime.now() + datetime.timedelta(days=int(interval*newEase))
 
-    def calculateResponseTime(self) -> float:
+    def calculateResponseTime(self, pauseTime: float=0) -> float:
         """Calculates how long it took the user to respond"""
-        temp = datetime.datetime.now() - self.start
+        pause = datetime.timedelta(seconds=pauseTime)
+        temp = datetime.datetime.now() - self.start - pause
         return float(temp.seconds) + (temp.microseconds / 1000000)
 
-    def checkAnswer(self, userInput: str, ignoreTones: bool=False) -> tuple[ANSWER_STATE, QUALITY]:
+    def checkAnswer(self, userInput: str, pauseTime: float=0, ignoreTones: bool=False) -> tuple[ANSWER_STATE, QUALITY]:
         """
         Return true if correct pinyin for given chinese phrase. Updates the
         database if answer was correct or a homonym. For answers that are
         wrong, they are put into an internal list of wrong answers and can
         be randomly chosen when calling getRandomPhraseInLevel(). To write them
         to the database, call flush()"""
+        # First, add to list of answered phrases and update response time
+        self.previouslyAnsweredPhrases.append(self.currentPhrase)
+        self._insertResponseTime(pauseTime)
+
         # Create a dummy function to handle tone marks
         if ignoreTones:
             l = lambda s: "".join([c for c in s if not c.isdigit()])
@@ -620,33 +641,59 @@ class Model(AbstractContextManager):
             l = lambda s: s
 
         # Pinyin has HTML tags so extract the element within
-        i = l(userInput.lower().replace(' ',''))
-        if i == l(Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower()):
-            if self.currentPhrase.id in self.incorrectPhrases: # See if user got it wrong during this session
-                oldQuality = self.incorrectPhrases.pop(self.currentPhrase.id)
-                self._updateDatabase(ANSWER_STATE.WRONG, oldQuality)
-                quality = self._assessQuality(ANSWER_STATE.CORRECT)
-                return (ANSWER_STATE.CORRECT, quality)
-            quality = self._updateDatabase(ANSWER_STATE.CORRECT)
+        _userInput = l(userInput.lower().replace(' ',''))
+
+        # Check if user got it correct
+        if _userInput == l(Model.getPinyinBetweenTags(self.currentPhrase.pinyin).lower()):
+            # See if user has seen it before this session
+            if self.currentPhrase.id in [p.id for p in self.previouslyAnsweredPhrases]:
+                # Has seen it; see if user got it wrong during this session
+                if self.currentPhrase.id in self.incorrectPhrasesData:
+                    # Got it wrong before
+                    # Update DB saying user got it wrong before using old stored quality
+                    #   and return current quality
+                    self._updatePhrase(ANSWER_STATE.WRONG, self.incorrectPhrasesData.pop(self.currentPhrase.id))
+                    return (ANSWER_STATE.CORRECT, self._assessQuality(ANSWER_STATE.CORRECT))
+                # Has seen it but didn't get it wrong before
+                # No DB update, return current quality
+                return (ANSWER_STATE.CORRECT, self._assessQuality(ANSWER_STATE.CORRECT))
+            # Has not seen it before
+            # Update DB and return current quality
+            quality = self._assessQuality(ANSWER_STATE.CORRECT)
+            self._updatePhrase(ANSWER_STATE.CORRECT, quality)
             return (ANSWER_STATE.CORRECT, quality)
         
-        # Check against homonyms
+        # Not correct, check against homonyms
         for p in self.phrasesWithSameLogographs:
-            if i == l(Model.getPinyinBetweenTags(p.pinyin).lower()):
-                if self.currentPhrase.id in self.incorrectPhrases: # See if user got it wrong during this session
-                    oldQuality = self.incorrectPhrases.pop(self.currentPhrase.id)
-                    self._updateDatabase(ANSWER_STATE.WRONG, oldQuality)
-                    quality = self._assessQuality(ANSWER_STATE.HOMONYM)
-                    return (ANSWER_STATE.HOMONYM, quality)
-                quality = self._updateDatabase(ANSWER_STATE.HOMONYM)
+            if _userInput == l(Model.getPinyinBetweenTags(p.pinyin).lower()):
+                # See if user has seen it before this session
+                if self.currentPhrase.id in [p.id for p in self.previouslyAnsweredPhrases]:
+                    # Has seen it; see if user got it wrong during this session
+                    if self.currentPhrase.id in self.incorrectPhrasesData:
+                        # Got it wrong before
+                        # Update DB saying user got it wrong before using old stored quality
+                        #   and return current quality
+                        self._updatePhrase(ANSWER_STATE.WRONG, self.incorrectPhrasesData.pop(self.currentPhrase.id))
+                        return (ANSWER_STATE.HOMONYM, self._assessQuality(ANSWER_STATE.HOMONYM))
+                    # Has seen it but didn't get it wrong before
+                    # No DB update, return current quality
+                    return (ANSWER_STATE.HOMONYM, self._assessQuality(ANSWER_STATE.HOMONYM))
+                # Has not seen it before
+                # Update DB and return current quality
+                quality = self._assessQuality(ANSWER_STATE.HOMONYM)
+                self._updatePhrase(ANSWER_STATE.HOMONYM, quality)
                 return (ANSWER_STATE.HOMONYM, quality)
         
         # Boowomp, put into a list to be called again until user gets it right
         quality = self._assessQuality(ANSWER_STATE.WRONG)
-        if self.currentPhrase.id not in self.incorrectPhrases:
+        if self.currentPhrase.id not in self.incorrectPhrasesData:
             # First time wrong, add to list
-            self.incorrectPhrases[self.currentPhrase.id] = (quality, self.calculateResponseTime())
+            self.incorrectPhrasesData[self.currentPhrase.id] = quality
         return (ANSWER_STATE.WRONG, quality)
+
+    def clear(self) -> None:
+        """Clears list of prevoiusly answered questions"""
+        self.previouslyAnsweredPhrases = []
 
     def close(self) -> None:
         """Closes database connection"""
@@ -657,14 +704,22 @@ class Model(AbstractContextManager):
         """Removes entry from testing pool"""
         self.chineseDB.deletePhrase(self.currentPhrase.id)
 
+    def endSession(self) -> None:
+        """
+        To be called when user is finished with their learning session. This
+        essentially calls flush(), clear(), and close()"""
+        self.flush()
+        self.clear()
+        self.close()
+
     def flush(self) -> None:
         """
         Updates database with the phrases the user didn't get right today and
         weren't able to correct themselves. This should be called before
         closing the database for the session
         """
-        for id, (quality, responseTime) in self.incorrectPhrases.items():
-            self._updateDatabaseDuringFlush(id, quality, responseTime)
+        for id, quality in self.incorrectPhrasesData.items():
+            self._updateDatabaseDuringFlush(id, quality)
 
     def getFirstPhraseInLevel(self, level: LEARNING_LEVEL) -> tuple[str, int]:
         """Returns the first phrase in a level and its index"""
@@ -674,15 +729,28 @@ class Model(AbstractContextManager):
         """Returns the last phrase in a level and its index"""
         return (self.vocabularies[level][-1], self.maximums[level])
 
-    def getPhraseInLevel(self, level: LEARNING_LEVEL, index: int) -> str:
-        """Returns specified phrase"""
-        return self.vocabularies[level][index]
+    def getPhraseByID(self, id: int) -> ChineseDataWithStats | None:
+        """Gets phrase by given id"""
+        return self.chineseDB.getPhraseById(id)
+
+    def getPhraseInLevel(self, level: LEARNING_LEVEL, vocabIndex: int) -> str:
+        """Returns specified phrase from the initially provided vocabulary file"""
+        return self.vocabularies[level][vocabIndex]
+
+    def getPreviouslyAnsweredPhrase(self) -> ChineseDataWithStats | None:
+        """Retrieves previously answered phrase if exists"""
+        try:
+            phrase = self.getPhraseByID(self.previouslyAnsweredPhrases.pop().id)
+            self._intializePhraseVariables(phrase)
+            return phrase
+        except IndexError:
+            return None
 
     def getRandomIncorrectPhrase(self) -> ChineseDataWithStats | None:
         """Returns a random phrase in (chinese, pinyin, details) that user got wrong during this session"""
-        if len(self.incorrectPhrases) == 0:
+        if len(self.incorrectPhrasesData) == 0:
             return None
-        self._intializePhraseVariables(self.chineseDB.getPhraseById(random.choice([k for k in self.incorrectPhrases.keys()])))
+        self._intializePhraseVariables(self.chineseDB.getPhraseById(random.choice([k for k in self.incorrectPhrasesData.keys()])))
         return self.currentPhrase
 
     def getRandomPhrase(self, learningLevels: list[LEARNING_LEVEL], maximumBounds: dict[LEARNING_LEVEL, int], limit: int=None) -> ChineseDataWithStats | None:
@@ -692,7 +760,7 @@ class Model(AbstractContextManager):
         """
 
         # See first if we have any incorrect phrases or phrases due today to work with
-        numI = len(self.incorrectPhrases)
+        numI = len(self.incorrectPhrasesData)
         numPDT = 0
         numPDTs = {}
         for level in learningLevels:
@@ -703,6 +771,7 @@ class Model(AbstractContextManager):
             # Forced to try and pick a random phrase from the database
             # Note: this may return None if there really are no other choices
             level = Model.getRandomLevel(learningLevels, maximumBounds)
+            print(f"Random phrase: {level}, {maximumBounds.get(level, 0)}")
             return self.getRandomPhraseInLevel(level, maximumBounds.get(level, 0), limit)
 
         # We have some phrases in the incorrect/due today bank
@@ -711,14 +780,17 @@ class Model(AbstractContextManager):
             # Failed chance, pick one incorrect phrases or from ones due today
             if random.randint(1, numI + numPDT) <= numI:
                 # Choose from incorrect phrases
+                print(f"Incorrect phrase")
                 return self.getRandomIncorrectPhrase()
             # Instead choose from phrases due today
             level = Model.getRandomLevel(learningLevels, numPDTs)
+            print(f"Due today phrase: {level}, {numPDTs.get(level, 0)}")
             return self.getRandomPhraseDueTodayInLevel(level, maximumBounds.get(level, 0), limit)
         
         # Failed chance, choose a random phrase from the database
         # Note: this may return None if there really are no other choices
         level = Model.getRandomLevel(learningLevels, maximumBounds)
+        print(f"Random phrase: {level}, {maximumBounds.get(level, 0)}")
         return self.getRandomPhraseInLevel(level, maximumBounds.get(level, 0), limit)
 
     def getRandomPhraseInLevel(self, level: LEARNING_LEVEL, maximumBound: int, limit: int=None) -> ChineseDataWithStats | None:
@@ -754,15 +826,17 @@ class Controller(AbstractContextManager):
             ignoreTones=False,
             iniFile: str=None
             ) -> None:
-        self._did_iniReadFail = False
         self.model = model
         self.view  = view
         self.learningLevels = learningLevels
         self.ignoreTones = ignoreTones
         self.iniFile = iniFile
+
+        self._did_iniReadFail = False
         self.activeLearningLevels: list[LEARNING_LEVEL] = []
         self.activeLearningLevelEndRanges: dict[LEARNING_LEVEL, int] = {}
         self.hasChecked = False
+        self.pauseTime = 0.0
 
         # Set up initialization state
         self._read_ini() # Will set things to default if no .ini given
@@ -776,6 +850,15 @@ class Controller(AbstractContextManager):
     def __exit__(self, exc_type, exc_value, traceback) -> (bool | None):
         self.finish()
         return super().__exit__(exc_type, exc_value, traceback)
+
+    @contextmanager
+    def _trackPauseTime(self) -> Generator:
+        start = datetime.datetime.now()
+        try:
+            yield
+        finally:
+            temp = datetime.datetime.now() - start
+            self.pauseTime += float(temp.seconds) + (temp.microseconds / 1000000)
 
     def _connectSignalAndSlots(self) -> None:
         """Hooks up model to view"""
@@ -871,9 +954,10 @@ class Controller(AbstractContextManager):
         for l in self.learningLevels:
             if l in self.activeLearningLevels:
                 config["DEFAULT"][f"{l.name}_IsActive"] = "True"
+                config["DEFAULT"][f"{l.name}_EndRange"] = f"{self.view.getSliderPosition(l)}"
             else:
                 config["DEFAULT"][f"{l.name}_IsActive"] = "False"
-            config["DEFAULT"][f"{l.name}_EndRange"] = f"{self.view.getSliderValue(l)}"
+                config["DEFAULT"][f"{l.name}_EndRange"] = "1"
         with open(self.iniFile, 'w') as configHandle:
             config.write(configHandle)
 
@@ -889,12 +973,10 @@ class Controller(AbstractContextManager):
 
     def checkAnswer(self) -> None:
         """Checks inputted pinyin versus true answer"""
-        if (not self.view.hasInput()): # Accidental click
-            return
         if self.hasChecked: # User already checked or hit Next, no point checking
             return
         self.hasChecked = True
-        answer, quality = self.model.checkAnswer(self.view.getInput(), self.ignoreTones)
+        answer, quality = self.model.checkAnswer(self.view.getInput(), self.pauseTime, self.ignoreTones)
         self.view.setQuality(quality)
         match answer:
             case ANSWER_STATE.CORRECT:
@@ -941,6 +1023,7 @@ class Controller(AbstractContextManager):
 
     def loadNextQuestion(self) -> None:
         """Fetches next question and loads it to view"""
+        self.pauseTime = 0.0
         data = self.model.getRandomPhrase(self.activeLearningLevels, self.activeLearningLevelEndRanges)
         if data is None:
             createErrorMessage(self.view, "No phrases were found in the levels and selections provided. Please expand the scope or add to the database.")
@@ -995,8 +1078,17 @@ class Controller(AbstractContextManager):
             self.hasChecked = True
 
     def previousQuestion(self) -> None:
-        """Fetches previous question (along a doubly linked list)"""
-        raise NotImplementedError
+        """Fetches previous question"""
+        data = self.model.getPreviouslyAnsweredPhrase()
+        if data is None:
+            with self._trackPauseTime():
+                createErrorMessage(self.view, "No more previous answers", "Error: Cannot go back")
+            return
+        prompt = Model.getPromptFromData(data)
+        answer = Model.getAnswerFromData(data)
+        details = Model.getDetailsFromData(data)
+        self.view.loadNextQuestion(prompt, answer, details)
+        self.hasChecked = False
 
     def returnPressed(self) -> None:
         """
@@ -1019,7 +1111,7 @@ class Controller(AbstractContextManager):
     def updateLabel(self, labelSide: LABEL_SIDE, learningLevel: LEARNING_LEVEL) -> Callable[[], None]:
         """When the slider was moved, changed what value the label shows"""
         def dummy() -> None:
-            value = self.view.getSliderValue(learningLevel)
+            value = self.view.getSliderPosition(learningLevel)
             self.view.setLabel(
                 labelSide, 
                 learningLevel, 
@@ -1031,14 +1123,17 @@ class Controller(AbstractContextManager):
 def main(argv: list[str], argc: int) -> None:
     databaseFile = argv[1]
     vocabularyFiles = argv[2:]
+    debugFile = "debug.txt"
 
     app = QApplication([])
     app.setStyleSheet("") # TODO
     view = View(WINDOW_WIDTH, WINDOW_HEIGHT)
-    with Model(databaseFile, vocabularyFiles) as model:
-        with Controller(model, view, [l for l in HSK_LEVEL], ignoreTones=False, iniFile="settings.ini"):
-            view.show()
-            sys.exit(app.exec())
+    with open(debugFile, 'a') as debugHandle:
+        with redirect_stdout(debugHandle):
+            with Model(databaseFile, vocabularyFiles) as model:
+                with Controller(model, view, [l for l in HSK_LEVEL], ignoreTones=False, iniFile="settings.ini"):
+                    view.show()
+                    sys.exit(app.exec())
 
 if __name__ == "__main__":
     main(sys.argv, len(sys.argv))

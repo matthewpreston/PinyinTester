@@ -218,7 +218,10 @@ class ChineseDB(Database):
             WHERE
                 band = :_band AND
                 ordinalID <= :_maxOrdinalID AND
-                dueDate <= date("now") AND
+                (
+                    dueDate <= date("now") OR
+                    dueDate is NULL
+                ) AND
                 deleted = 0
             ORDER BY
                 dueDate DESC
@@ -258,7 +261,10 @@ class ChineseDB(Database):
             WHERE
                 band = :_band AND
                 ordinalID <= :_maxOrdinalID AND
-                dueDate <= date("now") AND
+                (
+                    dueDate <= date("now") OR
+                    dueDate is NULL
+                ) AND
                 deleted = 0
             """,
             _band=ChineseDB.bands[level],
